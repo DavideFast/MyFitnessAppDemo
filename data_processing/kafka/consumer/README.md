@@ -1,248 +1,175 @@
 # Kafka Consumer Real-Time Analysis
 
-Consumatore Kafka in Java che elabora i dati di telemetria dei runner in tempo reale usando Kafka Streams.
+Consumer Kafka in Java (Kafka Streams) per l'analisi realtime dei campioni smartwatch.
 
-## Funzionalità
+## Stato attuale
 
-- **Rilevamento immobilità**: Monitora i runner per rilevare periodi di immobilità
-- **Calcolo velocità**: Calcola la velocità media usando i dati GPS
-- **Analisi deriva cardiaca**: Monitora la deriva della frequenza cardiaca durante le sessioni
-- **Salvataggio dati**: Inserisce batch di dati in ClickHouse e riepiloghi in PostgreSQL
-- **State Store**: Mantiene stato persistente per sopravvivere a riavvii e rebalance
+- Runtime su Kubernetes tramite StatefulSet: k3s/08-kafka-consumer.yaml
+- Autoscaling tramite KEDA su consumer lag
+- Topic di input principale: heart-rate-events
+
+## Funzionalita principali
+
+- Rilevamento immobilita
+- Calcolo velocita media su finestra mobile
+- Analisi deriva cardiaca
+- Salvataggio dati in ClickHouse e PostgreSQL
+- State store persistente su volume (sopravvive ai restart dei pod)
+
+## Struttura package Java
+
+```text
+analisi_immediata/
+├── ConsumerKafka.java
+├── analisi/
+│   ├── AllarmeNotifier.java
+│   ├── CalcoliMatematici.java
+│   └── RilevatoreImmobilita.java
+├── config/
+│   └── Configurazione.java
+├── modello/
+│   ├── CampioneDaSalvare.java
+│   ├── HeartRateSample.java
+│   ├── Posizione.java
+│   └── StatoSessione.java
+└── persistenza/
+	└── Database.java
+```
 
 ## Prerequisiti
 
-- Java 17+
-- Maven 3.9.5+
-- Kafka 3.6.0+
-- ClickHouse
-- PostgreSQL
+- Java 17
+- Maven 3.9+
+- Docker
+- Cluster k3s con namespace bigintensive
 
-## Struttura del Progetto
-
-```
-kafka-consumer-real-time/
-├── src/main/java/analisi_immediata/
-│   ├── StreamsAllarmi.java (main application)
-│   ├── HeartRateSample.java (data model)
-│   └── ...
-├── pom.xml (Maven configuration con maven-shade-plugin per fat JAR)
-└── target/
-    └── kafka-consumer-real-time-1.0-SNAPSHOT-jar-with-dependencies.jar
-```
-
-## Variabili d'Ambiente
-
-### Kafka
-
-- `KAFKA_BOOTSTRAP_SERVERS`: Bootstrap servers Kafka (default: `kafka:19092`)
-- `KAFKA_TOPIC`: Topic di input (default: `heart-rate-events`)
-
-### ClickHouse
-
-- `CLICKHOUSE_URL`: JDBC URL (default: `jdbc:clickhouse://clickhouse:8123/bigintensive`)
-- `CLICKHOUSE_USER`: Username (default: `default`)
-- `CLICKHOUSE_PASSWORD`: Password (default: empty)
-
-### PostgreSQL
-
-- `POSTGRES_URL`: JDBC URL (default: `jdbc:postgresql://postgres:5432/bigintensive`)
-- `POSTGRES_USER`: Username (default: `postgres`)
-- `POSTGRES_PASSWORD`: Password (default: `postgres`)
-
-## Compilazione
-
-### Localmente
+## Build locale
 
 ```bash
-cd kafka-consumer-real-time
+cd data_processing/kafka/consumer/kafka-consumer-real-time
 mvn clean package -DskipTests
 ```
 
-Il JAR completo sarà in `target/kafka-consumer-real-time-1.0-SNAPSHOT-jar-with-dependencies.jar`
+Output JAR:
 
-### Con Build Script
+```text
+target/kafka-consumer-real-time-1.0-SNAPSHOT-jar-with-dependencies.jar
+```
+
+## Build Docker
+
+Dalla root del progetto:
 
 ```bash
-cd streaming/kafka/consumer
+cd data_processing/kafka/consumer
+docker build -t davidefast/consumer-kafka:latest .
+```
 
-# Solo build
+Script di supporto:
+
+```bash
+cd data_processing/kafka/consumer
+
+# Build JAR
 ./build.sh
 
-# Build + Docker
+# Build JAR + Docker
 ./build.sh --docker
 
-# Build + Docker + Push to registry
+# Build JAR + Docker + Push
 ./build.sh --docker --push davidefast
 ```
 
-## Deployment
+## Deploy su k3s
 
-### Kubernetes (K3s)
-
-1. Creare l'immagine Docker:
+Percorso consigliato: deploy orchestrato da script principale.
 
 ```bash
-docker build -t davidefast/consumer-kafka:latest streaming/kafka/consumer/
+bash k3s/deploy-all.sh
 ```
 
-2. Caricare l'immagine nel registry locale K3s (se non in uso DockerHub)
-
-3. Applicare il manifesto:
+Deploy solo consumer:
 
 ```bash
 kubectl apply -f k3s/08-kafka-consumer.yaml
 ```
 
-**Manifesto include:**
+## Cosa contiene 08-kafka-consumer.yaml
 
-- ConfigMap con le variabili d'ambiente
-- Deployment con 2 replica per alta disponibilità
-- Service per esporre le metriche
-- Probes di liveness e readiness
-- Affinity policy per distribuire i pod
-- Tolerations per node taints
+- ConfigMap kafka-consumer-config con parametri applicativi
+- StatefulSet kafka-consumer-realtime (repliche iniziali: 2)
+- PVC per state store locale Kafka Streams
+- ScaledObject KEDA (min 2, max 6) basato su lag topic
+- Init container che aspetta bootstrap Kafka e topic disponibili
+- Service headless + service metrics
 
-**Verificare il deployment:**
+## Variabili principali
 
-```bash
-# Status deployment
-kubectl get deployment kafka-consumer-realtime -n bigintensive
+Kafka:
 
-# Log dei pod
-kubectl logs -f kafka-consumer-realtime-xxxxx -n bigintensive
+- KAFKA_BOOTSTRAP_SERVERS (default in cluster: kafka:19092)
+- KAFKA_TOPIC (default: heart-rate-events)
+- KAFKA_APPLICATION_ID
+- KAFKA_STATE_DIR
 
-# Descrivere il deployment
-kubectl describe deployment kafka-consumer-realtime -n bigintensive
-```
+Elaborazione:
 
-## Esecuzione
+- SAMPLE_INTERVAL
+- MAX_CAMPIONI_BATCH
+- SECONDI_FLUSH_BUFFER
+- MAX_CAMPIONI_SOSPESI
+- FINESTRA_VELOCITA
+- SOGLIA_MOVIMENTO_M
+- SECONDI_IMMOBILE
 
-### Locale (standalone)
+Database:
 
-```bash
-java -Xms256m -Xmx512m -jar target/kafka-consumer-real-time-1.0-SNAPSHOT-jar-with-dependencies.jar
-```
+- CLICKHOUSE_URL
+- CLICKHOUSE_USER
+- CLICKHOUSE_PASSWORD (secret)
+- POSTGRES_URL
+- POSTGRES_USER
+- POSTGRES_PASSWORD (secret)
 
-Con variabili d'ambiente:
-
-```bash
-export KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-export CLICKHOUSE_URL=jdbc:clickhouse://localhost:8123/bigintensive
-export POSTGRES_URL=jdbc:postgresql://localhost:5432/bigintensive
-
-java -Xms256m -Xmx512m -jar target/kafka-consumer-real-time-1.0-SNAPSHOT-jar-with-dependencies.jar
-```
-
-## Architettura
-
-```
-Kafka Topic: heart-rate-events
-  ↓
-Kafka Streams Application (StreamsAllarmi)
-  ├─ State Store: stato-sessioni (persistente)
-  ├─ Processor: RilevatoreImmobilita
-  │   ├─ Analizza dati GPS e frequenza cardiaca
-  │   ├─ Rileva anomalie (immobilità, crisi cardiaca)
-  │   └─ Calcola metriche aggregate
-  │
-  ├─ Output 1: Batch Insert → ClickHouse
-  │   └─ Tabella: heart_rate_samples
-  │
-  └─ Output 2: Summary Insert → PostgreSQL
-      └─ Tabella: session_summary
-```
-
-## Algoritmi Principali
-
-### Calcolo Distanza GPS
-
-Utilizza la formula di Haversine per calcolare la distanza tra due coordinate GPS:
-
-```
-R = 6.371.000 m (raggio terra)
-dLat = lat2 - lat1
-dLon = lon2 - lon1
-a = sin²(dLat/2) + cos(lat1) * cos(lat2) * sin²(dLon/2)
-c = 2 * atan2(√a, √(1-a))
-distanza = R * c
-```
-
-### Rilevamento Immobilità
-
-Monitora il movimento e la frequenza cardiaca per identificare periodi di immobilità:
-
-- **Soglia movimento**: 10 metri
-- **Soglia tempo immobile**: 30 secondi
-- **Allarme**: Se rimane immobile oltre la soglia
-
-### Analisi Deriva Cardiaca
-
-```
-Efficienza_puntuale = velocita_puntuale / frequenza_cardiaca_media
-Deriva_cardiaca_percentuale = (Efficienza_attuele - Efficienza_iniziale) / Efficienza_iniziale * 100
-```
-
-## Monitoraggio
-
-### Health Check
-
-Il consumer include health check che verifica il processo Java è in esecuzione.
-
-### Metriche (Opzionale - da implementare)
-
-Potrebbe essere aggiunto Prometheus per metriche:
-
-- Record elaborati per secondo
-- Latenza di elaborazione
-- Rate di errori nel salvataggio in DB
-
-### Log
-
-I log sono salvati in:
-
-- Docker: `docker logs kafka-consumer-realtime`
-- K3s: `kubectl logs <pod-name> -n bigintensive`
-- File locale: `/var/log/kafka-consumer/`
-
-## Troubleshooting
-
-### Consumer non si connette a Kafka
+## Operativita e controlli
 
 ```bash
-# Verificare bootstrap servers
-kubectl exec -it <pod-name> -n bigintensive -- /bin/sh
-telnet kafka 19092
+# Stato StatefulSet
+kubectl get statefulset kafka-consumer-realtime -n bigintensive
+
+# Pod consumer
+kubectl get pods -n bigintensive -l app=kafka-consumer
+
+# Scaler KEDA
+kubectl get scaledobject kafka-consumer-realtime-scaler -n bigintensive
+
+# Log consumer
+kubectl logs -f statefulset/kafka-consumer-realtime -n bigintensive
 ```
 
-### Errore di connessione ClickHouse
+## Troubleshooting rapido
 
-- Verificare CLICKHOUSE_URL
-- Controllare credentials
-- Verificare che la tabella esista
+Kafka non raggiungibile:
 
-### Errore di connessione PostgreSQL
+- Verifica KAFKA_BOOTSTRAP_SERVERS in ConfigMap
+- Verifica broker e topic in namespace bigintensive
 
-- Verificare POSTGRES_URL
-- Controllare credentials
-- Verificare che le tabelle esistano
+Consumer in crash loop:
 
-## Versioni Dipendenze
+- Controlla secret DB (CLICKHOUSE_PASSWORD, POSTGRES_PASSWORD)
+- Controlla raggiungibilita ClickHouse/PostgreSQL dai pod
 
-- Kafka: 3.6.0
-- ClickHouse JDBC: 0.4.6
-- PostgreSQL JDBC: 42.6.0
-- Jackson: 2.17.2
-- Java: 17
+Nessun consumo:
 
-## Prossimi Passi
+- Verifica lag e stato del consumer group rilevatore-immobilita
+- Verifica che il simulatore pubblichi su heart-rate-events
 
-1. ✅ Implementare consumer Kafka Streams
-2. ✅ Aggiungere nei manifesti K3s
-3. ⏳ Implementare metriche Prometheus
-4. ⏳ Aggiungere alerting per anomalie critiche
-5. ⏳ Implementare graceful shutdown
+## Versioni dipendenze applicative
 
-## Supporto e Contatti
+Dal pom.xml corrente:
 
-Per domande o problemi, contattare il team di sviluppo.
+- kafka-clients: 3.6.0
+- kafka-streams: 3.6.0
+- clickhouse-jdbc: 0.4.6
+- postgresql: 42.6.0
+- jackson-databind: 2.17.2
