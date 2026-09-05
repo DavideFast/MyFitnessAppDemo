@@ -86,41 +86,59 @@ spec:
           import json
           import os
           import ssl
+          import traceback
           import urllib.request
           import psycopg
           import clickhouse_connect
 
-          print("[compute-plan] start", flush=True)
+          OUT_DIR = "/tmp/argo-out"
+
+          def write_output(name, value):
+            with open(f"{OUT_DIR}/{name}", "w", encoding="utf-8") as f:
+              f.write(str(value))
 
           def ready_nodes_count():
-              host = os.getenv("KUBERNETES_SERVICE_HOST")
-              port = os.getenv("KUBERNETES_SERVICE_PORT", "443")
-              if not host:
-                  return 1
+            host = os.getenv("KUBERNETES_SERVICE_HOST")
+            port = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+            if not host:
+              return 1
 
-              token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-              ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-              with open(token_path, encoding="utf-8") as f:
-                  token = f.read().strip()
+            token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+            with open(token_path, encoding="utf-8") as f:
+              token = f.read().strip()
 
-              req = urllib.request.Request(
-                  f"https://{host}:{port}/api/v1/nodes",
-                  headers={"Authorization": f"Bearer {token}"},
-              )
-              context = ssl.create_default_context(cafile=ca_path)
-              with urllib.request.urlopen(req, context=context, timeout=10) as response:
-                  payload = json.loads(response.read().decode("utf-8"))
+            req = urllib.request.Request(
+              f"https://{host}:{port}/api/v1/nodes",
+              headers={"Authorization": f"Bearer {token}"},
+            )
+            context = ssl.create_default_context(cafile=ca_path)
+            with urllib.request.urlopen(req, context=context, timeout=10) as response:
+              payload = json.loads(response.read().decode("utf-8"))
 
-              count = 0
-              for node in payload.get("items", []):
-                  if node.get("spec", {}).get("unschedulable"):
-                      continue
-                  conditions = node.get("status", {}).get("conditions", [])
-                  ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
-                  if ready:
-                      count += 1
-              return max(1, count)
+            count = 0
+            for node in payload.get("items", []):
+              if node.get("spec", {}).get("unschedulable"):
+                continue
+              conditions = node.get("status", {}).get("conditions", [])
+              ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+              if ready:
+                count += 1
+            return max(1, count)
 
+          os.makedirs(OUT_DIR, exist_ok=True)
+          # Create defaults early so Argo output collection does not fail noisily.
+          write_output("start-id", 1)
+          write_output("end-id", 0)
+          write_output("replicas", 1)
+          write_output("total-workouts", 0)
+          write_output("raw-rows-pending", 0)
+
+          print("[compute-plan] start", flush=True)
+
+          pg = None
+          ch = None
+          try:
             print("[compute-plan] connecting to PostgreSQL", flush=True)
             pg = psycopg.connect(
               host=os.getenv("POSTGRES_HOST", "postgres"),
@@ -128,66 +146,71 @@ spec:
               dbname=os.getenv("POSTGRES_DB", "bigintensive"),
               user=os.getenv("POSTGRES_USER", "postgres"),
               password=os.getenv("POSTGRES_PASSWORD", "postgres"),
-          )
+            )
 
             clickhouse_database = os.getenv("CLICKHOUSE_DB") or os.getenv("CLICKHOUSE_DATABASE", "bigintensive")
             print(
               f"[compute-plan] connecting to ClickHouse host={os.getenv('CLICKHOUSE_HOST', 'clickhouse')} db={clickhouse_database}",
               flush=True,
             )
-          ch = clickhouse_connect.get_client(
+            ch = clickhouse_connect.get_client(
               host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
               port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
               username=os.getenv("CLICKHOUSE_USER", "default"),
               password=os.getenv("CLICKHOUSE_PASSWORD", ""),
               database=clickhouse_database,
-          )
+            )
 
             print("[compute-plan] querying checkpoints", flush=True)
-          with pg.cursor() as cur:
+            with pg.cursor() as cur:
               cur.execute("SELECT COALESCE(MAX(id), 0) FROM allenamenti")
               postgres_max_id = int(cur.fetchone()[0] or 0)
 
-          max_final_row = ch.query("SELECT max(allenamento_id) FROM bigintensive.allenamenti").result_rows[0][0]
-          max_raw_row = ch.query("SELECT max(allenamento_id) FROM bigintensive.allenamenti_raw").result_rows[0][0]
-          raw_rows_pending = int(ch.query("SELECT count() FROM bigintensive.allenamenti_raw").result_rows[0][0] or 0)
+              max_final_row = ch.query(
+                f"SELECT max(allenamento_id) FROM {clickhouse_database}.allenamenti"
+              ).result_rows[0][0]
+              max_raw_row = ch.query(
+                f"SELECT max(allenamento_id) FROM {clickhouse_database}.allenamenti_raw"
+              ).result_rows[0][0]
+              raw_rows_pending = int(
+                ch.query(f"SELECT count() FROM {clickhouse_database}.allenamenti_raw").result_rows[0][0] or 0
+              )
 
-          max_final = int(max_final_row) if max_final_row is not None else 0
-          max_raw = int(max_raw_row) if max_raw_row is not None else 0
+            max_final = int(max_final_row) if max_final_row is not None else 0
+            max_raw = int(max_raw_row) if max_raw_row is not None else 0
 
-          start_id = max(max_final, max_raw) + 1
-          end_id = postgres_max_id
-          total_workouts = max(0, (end_id - start_id) + 1)
+            start_id = max(max_final, max_raw) + 1
+            end_id = postgres_max_id
+            total_workouts = max(0, (end_id - start_id) + 1)
 
-          ready_nodes = ready_nodes_count()
-          requested = "{{inputs.parameters.requested-replicas}}".strip()
-          requested_replicas = int(requested) if requested.isdigit() else ready_nodes
-          replicas = max(1, min(requested_replicas, ready_nodes))
-          if total_workouts > 0:
+            ready_nodes = ready_nodes_count()
+            requested = "{{inputs.parameters.requested-replicas}}".strip()
+            requested_replicas = int(requested) if requested.isdigit() else ready_nodes
+            replicas = max(1, min(requested_replicas, ready_nodes))
+            if total_workouts > 0:
               replicas = max(1, min(replicas, total_workouts))
-          else:
+            else:
               replicas = 1
 
-          os.makedirs("/tmp/argo-out", exist_ok=True)
-
-          with open("/tmp/argo-out/start-id", "w", encoding="utf-8") as f:
-              f.write(str(start_id))
-          with open("/tmp/argo-out/end-id", "w", encoding="utf-8") as f:
-              f.write(str(end_id))
-          with open("/tmp/argo-out/replicas", "w", encoding="utf-8") as f:
-              f.write(str(replicas))
-          with open("/tmp/argo-out/total-workouts", "w", encoding="utf-8") as f:
-              f.write(str(total_workouts))
-          with open("/tmp/argo-out/raw-rows-pending", "w", encoding="utf-8") as f:
-              f.write(str(raw_rows_pending))
+            write_output("start-id", start_id)
+            write_output("end-id", end_id)
+            write_output("replicas", replicas)
+            write_output("total-workouts", total_workouts)
+            write_output("raw-rows-pending", raw_rows_pending)
 
             print(
               f"[compute-plan] done start_id={start_id} end_id={end_id} replicas={replicas} total_workouts={total_workouts} raw_rows_pending={raw_rows_pending}",
               flush=True,
             )
-
-          pg.close()
-          ch.close()
+          except Exception as error:
+            print(f"[compute-plan] failed: {error}", flush=True)
+            traceback.print_exc()
+            raise
+          finally:
+            if pg is not None:
+              pg.close()
+            if ch is not None:
+              ch.close()
       outputs:
         parameters:
           - name: start-id
