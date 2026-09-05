@@ -73,7 +73,7 @@ spec:
       script:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
-        command: [python]
+        command: [python, -u]
         envFrom:
           - configMapRef:
               name: bigintensive-config
@@ -86,6 +86,8 @@ spec:
           import urllib.request
           import psycopg
           import clickhouse_connect
+
+          print("[compute-plan] start", flush=True)
 
           def ready_nodes_count():
               host = os.getenv("KUBERNETES_SERVICE_HOST")
@@ -116,7 +118,8 @@ spec:
                       count += 1
               return max(1, count)
 
-          pg = psycopg.connect(
+            print("[compute-plan] connecting to PostgreSQL", flush=True)
+            pg = psycopg.connect(
               host=os.getenv("POSTGRES_HOST", "postgres"),
               port=int(os.getenv("POSTGRES_PORT", "5432")),
               dbname=os.getenv("POSTGRES_DB", "bigintensive"),
@@ -124,14 +127,20 @@ spec:
               password=os.getenv("POSTGRES_PASSWORD", "postgres"),
           )
 
+            clickhouse_database = os.getenv("CLICKHOUSE_DB") or os.getenv("CLICKHOUSE_DATABASE", "bigintensive")
+            print(
+              f"[compute-plan] connecting to ClickHouse host={os.getenv('CLICKHOUSE_HOST', 'clickhouse')} db={clickhouse_database}",
+              flush=True,
+            )
           ch = clickhouse_connect.get_client(
               host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
               port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
               username=os.getenv("CLICKHOUSE_USER", "default"),
               password=os.getenv("CLICKHOUSE_PASSWORD", ""),
-              database=os.getenv("CLICKHOUSE_DB", "bigintensive"),
+              database=clickhouse_database,
           )
 
+            print("[compute-plan] querying checkpoints", flush=True)
           with pg.cursor() as cur:
               cur.execute("SELECT COALESCE(MAX(id), 0) FROM allenamenti")
               postgres_max_id = int(cur.fetchone()[0] or 0)
@@ -168,6 +177,11 @@ spec:
               f.write(str(total_workouts))
           with open("/tmp/argo-out/raw-rows-pending", "w", encoding="utf-8") as f:
               f.write(str(raw_rows_pending))
+
+            print(
+              f"[compute-plan] done start_id={start_id} end_id={end_id} replicas={replicas} total_workouts={total_workouts} raw_rows_pending={raw_rows_pending}",
+              flush=True,
+            )
 
           pg.close()
           ch.close()
@@ -222,7 +236,7 @@ spec:
       container:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
-        command: [python, copyWorkoutToClickhouse.py]
+        command: [python, -u, copyWorkoutToClickhouse.py]
         envFrom:
           - configMapRef:
               name: bigintensive-config
@@ -247,7 +261,7 @@ spec:
       container:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
-        command: [python, copyWorkoutToClickhouse.py]
+        command: [python, -u, copyWorkoutToClickhouse.py]
         envFrom:
           - configMapRef:
               name: bigintensive-config
