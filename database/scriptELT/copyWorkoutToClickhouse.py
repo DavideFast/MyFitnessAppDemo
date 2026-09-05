@@ -59,6 +59,12 @@ CLICKHOUSE_BATCH_SIZE = 50_000
 # Trasformazione incrementale RAW -> finale ogni N allenamenti trasferiti.
 TRANSFORM_EVERY_WORKOUTS = int(os.getenv("ELT_TRANSFORM_EVERY_WORKOUTS", "500000"))
 
+# Modalita' operative:
+# - full: comportamento attuale (ingest + trasformazioni intermedie + flush finale a sorgente esaurita)
+# - ingest: solo caricamento PostgreSQL -> RAW (nessuna trasformazione)
+# - finalize: solo consolidamento RAW -> finale
+ELT_RUN_MODE = os.getenv("ELT_RUN_MODE", "full").strip().lower()
+
 
 # ============================================================
 # CONNESSIONE POSTGRESQL
@@ -286,7 +292,10 @@ def transform_raw_data(ch):
 
 def sync_allenamenti(
     pg,
-    ch
+    ch,
+    flush_initial_raw=True,
+    enable_incremental_transform=True,
+    enable_final_flush=True,
 ):
 
     print()
@@ -301,10 +310,15 @@ def sync_allenamenti(
 
     raw_rows_pending = get_raw_row_count(ch)
     if raw_rows_pending > 0:
-        print(
-            f"Rilevate {raw_rows_pending:,} righe in allenamenti_raw da consolidare prima della sync."
-        )
-        transform_raw_data(ch)
+        if flush_initial_raw:
+            print(
+                f"Rilevate {raw_rows_pending:,} righe in allenamenti_raw da consolidare prima della sync."
+            )
+            transform_raw_data(ch)
+        else:
+            print(
+                f"Rilevate {raw_rows_pending:,} righe in allenamenti_raw: consolidamento iniziale disabilitato in questa modalita'."
+            )
 
     # --------------------------------------------------------
     # Recuperiamo l'ultimo ID già trasferito
@@ -465,7 +479,7 @@ def sync_allenamenti(
                 f"{total_workouts:,}"
             )
 
-            if TRANSFORM_EVERY_WORKOUTS > 0 and workouts_since_transform >= TRANSFORM_EVERY_WORKOUTS:
+            if enable_incremental_transform and TRANSFORM_EVERY_WORKOUTS > 0 and workouts_since_transform >= TRANSFORM_EVERY_WORKOUTS:
                 print()
                 print(
                     f"Checkpoint ELT raggiunto ({workouts_since_transform:,} allenamenti): trasformazione incrementale in corso..."
@@ -473,7 +487,7 @@ def sync_allenamenti(
                 transform_raw_data(ch)
                 workouts_since_transform = 0
 
-    if postgres_exhausted and total_workouts > 0 and workouts_since_transform > 0:
+    if enable_final_flush and postgres_exhausted and total_workouts > 0 and workouts_since_transform > 0:
         print()
         print(
             f"Sorgente PostgreSQL esaurita: flush finale di {workouts_since_transform:,} allenamenti residui in corso..."
@@ -523,6 +537,13 @@ def main():
     print("MODALITÀ ELT - RAW")
     print("=" * 70)
 
+    if ELT_RUN_MODE not in {"full", "ingest", "finalize"}:
+        raise ValueError(
+            f"ELT_RUN_MODE non valido: {ELT_RUN_MODE}. Valori supportati: full, ingest, finalize"
+        )
+
+    print(f"Run mode: {ELT_RUN_MODE}")
+
     print(
         "Inizio:",
         datetime.now()
@@ -568,14 +589,27 @@ def main():
             ch
         )
 
-        # ----------------------------------------------------
-        # Sincronizzazione
-        # ----------------------------------------------------
+        if ELT_RUN_MODE == "finalize":
+            raw_rows_pending = get_raw_row_count(ch)
+            if raw_rows_pending > 0:
+                print(
+                    f"Finalize mode: trovate {raw_rows_pending:,} righe RAW, avvio consolidamento unico."
+                )
+                transform_raw_data(ch)
+            else:
+                print("Finalize mode: nessuna riga RAW da consolidare.")
+        else:
+            # ----------------------------------------------------
+            # Sincronizzazione
+            # ----------------------------------------------------
 
-        sync_allenamenti(
-            pg,
-            ch
-        )
+            sync_allenamenti(
+                pg,
+                ch,
+                flush_initial_raw=(ELT_RUN_MODE == "full"),
+                enable_incremental_transform=(ELT_RUN_MODE == "full"),
+                enable_final_flush=(ELT_RUN_MODE == "full"),
+            )
 
 
     except KeyboardInterrupt:
