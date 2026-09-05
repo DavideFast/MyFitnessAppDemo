@@ -56,14 +56,10 @@ POSTGRES_BATCH_SIZE = 10_000
 # Numero di righe inviate per volta a ClickHouse
 CLICKHOUSE_BATCH_SIZE = 50_000
 
-# Trasformazione incrementale RAW -> finale ogni N allenamenti trasferiti.
-TRANSFORM_EVERY_WORKOUTS = int(os.getenv("ELT_TRANSFORM_EVERY_WORKOUTS", "500000"))
-
 # Modalita' operative:
-# - full: comportamento attuale (ingest + trasformazioni intermedie + flush finale a sorgente esaurita)
 # - ingest: solo caricamento PostgreSQL -> RAW (nessuna trasformazione)
 # - finalize: solo consolidamento RAW -> finale
-ELT_RUN_MODE = os.getenv("ELT_RUN_MODE", "full").strip().lower()
+ELT_RUN_MODE = os.getenv("ELT_RUN_MODE", "ingest").strip().lower()
 
 
 # ============================================================
@@ -293,9 +289,6 @@ def transform_raw_data(ch):
 def sync_allenamenti(
     pg,
     ch,
-    flush_initial_raw=True,
-    enable_incremental_transform=True,
-    enable_final_flush=True,
 ):
 
     print()
@@ -310,15 +303,9 @@ def sync_allenamenti(
 
     raw_rows_pending = get_raw_row_count(ch)
     if raw_rows_pending > 0:
-        if flush_initial_raw:
-            print(
-                f"Rilevate {raw_rows_pending:,} righe in allenamenti_raw da consolidare prima della sync."
-            )
-            transform_raw_data(ch)
-        else:
-            print(
-                f"Rilevate {raw_rows_pending:,} righe in allenamenti_raw: consolidamento iniziale disabilitato in questa modalita'."
-            )
+        print(
+            f"Rilevate {raw_rows_pending:,} righe in allenamenti_raw: verranno consolidate in finalize mode."
+        )
 
     # --------------------------------------------------------
     # Recuperiamo l'ultimo ID già trasferito
@@ -333,8 +320,6 @@ def sync_allenamenti(
 
     total_workouts = 0
     total_rows = 0
-    workouts_since_transform = 0
-    postgres_exhausted = False
 
     # --------------------------------------------------------
     # Cursor PostgreSQL
@@ -379,7 +364,6 @@ def sync_allenamenti(
                 print(
                     "Nessun nuovo allenamento da trasferire."
                 )
-                postgres_exhausted = True
 
                 break
 
@@ -467,7 +451,6 @@ def sync_allenamenti(
             last_id = workouts[-1][0]
 
             total_workouts += len(workouts)
-            workouts_since_transform += len(workouts)
 
             print(
                 f"Ultimo ID trasferito: "
@@ -478,26 +461,6 @@ def sync_allenamenti(
                 f"Allenamenti trasferiti in questa esecuzione: "
                 f"{total_workouts:,}"
             )
-
-            if enable_incremental_transform and TRANSFORM_EVERY_WORKOUTS > 0 and workouts_since_transform >= TRANSFORM_EVERY_WORKOUTS:
-                print()
-                print(
-                    f"Checkpoint ELT raggiunto ({workouts_since_transform:,} allenamenti): trasformazione incrementale in corso..."
-                )
-                transform_raw_data(ch)
-                workouts_since_transform = 0
-
-    if enable_final_flush and postgres_exhausted and total_workouts > 0 and workouts_since_transform > 0:
-        print()
-        print(
-            f"Sorgente PostgreSQL esaurita: flush finale di {workouts_since_transform:,} allenamenti residui in corso..."
-        )
-        transform_raw_data(ch)
-    elif total_workouts > 0 and workouts_since_transform > 0:
-        print()
-        print(
-            f"Residuo non consolidato: {workouts_since_transform:,} allenamenti in attesa del prossimo checkpoint ({TRANSFORM_EVERY_WORKOUTS:,})."
-        )
 
     # ========================================================
     # RISULTATO
@@ -537,9 +500,9 @@ def main():
     print("MODALITÀ ELT - RAW")
     print("=" * 70)
 
-    if ELT_RUN_MODE not in {"full", "ingest", "finalize"}:
+    if ELT_RUN_MODE not in {"ingest", "finalize"}:
         raise ValueError(
-            f"ELT_RUN_MODE non valido: {ELT_RUN_MODE}. Valori supportati: full, ingest, finalize"
+            f"ELT_RUN_MODE non valido: {ELT_RUN_MODE}. Valori supportati: ingest, finalize"
         )
 
     print(f"Run mode: {ELT_RUN_MODE}")
@@ -606,9 +569,6 @@ def main():
             sync_allenamenti(
                 pg,
                 ch,
-                flush_initial_raw=(ELT_RUN_MODE == "full"),
-                enable_incremental_transform=(ELT_RUN_MODE == "full"),
-                enable_final_flush=(ELT_RUN_MODE == "full"),
             )
 
 
