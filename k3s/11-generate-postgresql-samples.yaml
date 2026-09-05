@@ -78,7 +78,7 @@ spec:
                   name: bigintensive-secrets
                   key: POSTGRES_PASSWORD
             - name: NUM_ATHLETES
-              value: "10000"
+              value: "100000"
             - name: MIN_WORKOUTS
               value: "150"
             - name: MAX_WORKOUTS
