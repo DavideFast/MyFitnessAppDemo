@@ -20,6 +20,10 @@ def main():
 
     spark.sparkContext.setLogLevel("WARN")
 
+    num_partizioni = 4
+    atleta_min = 1
+    atleta_max = 10000
+
     df = (
         spark.read.format("jdbc")
         .option("url", CLICKHOUSE_URL)
@@ -27,6 +31,10 @@ def main():
         .option("user", CLICKHOUSE_PROPS["user"])
         .option("password", CLICKHOUSE_PROPS["password"])
         .option("driver", CLICKHOUSE_PROPS["driver"])
+        .option("partitionColumn", "athlete_id")
+        .option("lowerBound", atleta_min)
+        .option("upperBound", atleta_max)
+        .option("numPartitions", num_partizioni)
         .load()
     )
 
@@ -94,7 +102,7 @@ def main():
         .withColumn("velocita_media", avg("velocita_puntuale").over(finestra_temporale_5min)) \
         .withColumn("frequenza_cardiaca_media", avg("heart_rate").over(finestra_temporale_5min)) \
         .withColumn("Efficienza_puntuale", col("velocita_puntuale") / col("frequenza_cardiaca_media")) \
-        .withColumn("Efficienza_puntuale_iniziale", first("Efficienza_puntuale").over(finestra_temporale)) \
+        .withColumn("Efficienza_puntuale_iniziale", first("Efficienza_puntuale", ignorenulls=True).over(finestra_temporale)) \
         .withColumn("Deriva_cardiaca_percentuale", (col("Efficienza_puntuale")- col("Efficienza_puntuale_iniziale")) / col("Efficienza_puntuale_iniziale") * 100)
 
     # Troviamo la velocità che causa la deriva cardiaca più alta per ogni atleta e sessione
