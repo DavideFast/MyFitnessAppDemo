@@ -1,15 +1,15 @@
-# Spark su k3s
+# Spark on k3s
 
-Questo modulo contiene il job Spark Python di analisi popolazione runner e i file di supporto per eseguirlo su Kubernetes.
+This module contains the Spark Python job for runner population analysis and the supporting files to run it on Kubernetes.
 
-## Stato attuale
+## Actual Status
 
 - Runtime Spark: 3.5.3
-- Modalita' principale: SparkApplication (Spark Operator) avviata dal backend
+- Main mode: SparkApplication (Spark Operator) started by the backend
 - Namespace: bigintensive
 - Job principale: RunningPopolationAnalysis.py
 
-## Struttura essenziale
+## Essential Structure
 
 ```text
 data_processing/spark/
@@ -21,13 +21,13 @@ data_processing/spark/
     └── config.py
 ```
 
-## Componenti Kubernetes coinvolti
+## Involved Kubernetes Components
 
 - Manifest Spark/Jupyter: k3s/05-spark-and-jupyter.yaml
 - Trigger job dal backend: endpoint /api/v1/startRunningPopulation
 - Configurazione base Spark in ConfigMap spark-config
 
-## Avvio del job di analisi
+## Starting the Analysis Job
 
 Il percorso standard e' chiamare il backend, che crea una SparkApplication con:
 
@@ -41,7 +41,7 @@ Endpoint:
 POST /api/v1/startRunningPopulation
 ```
 
-## Configurazione Spark effettiva (job RunningPopulation)
+## Actual Spark Configuration (RunningPopulation job)
 
 Parametri principali usati dal backend:
 
@@ -54,7 +54,7 @@ Parametri principali usati dal backend:
 - spark.driver.extraClassPath=/opt/spark/jars/clickhouse-jdbc-0.6.3-all.jar:/opt/spark/jars/postgresql-42.7.2.jar
 - spark.executor.extraClassPath=/opt/spark/jars/clickhouse-jdbc-0.6.3-all.jar:/opt/spark/jars/postgresql-42.7.2.jar
 
-## Build immagine Spark
+## Build Spark Image
 
 Il Dockerfile locale prepara un'immagine Spark con:
 
@@ -69,23 +69,23 @@ cd data_processing/spark
 docker build -t davidefast/bigintensive-sparkwithdependencies:latest .
 ```
 
-## Jupyter (opzionale)
+## Jupyter (optional)
 
 Jupyter e' disponibile nel cluster per esplorazione e benchmark notebook.
 
 - URL tipico: http://jupyter.bigintensive.local
 - Token configurato nel manifest corrente: bigintensive
 
-Nota: il job production RunningPopulation e' avviato dal backend via SparkApplication, non dipende da Jupyter.
+Note: the production RunningPopulation job is started by the backend via SparkApplication, it does not depend on Jupyter.
 
-## Sorgenti dati usate dal job
+## Data Sources Used by the Job
 
 - ClickHouse (tabella running_samples)
 - PostgreSQL (tabella anthropometric_values)
 
 I dettagli di connessione sono centralizzati in jobs/config.py tramite variabili ambiente.
 
-## Operazioni utili
+## Useful Operations
 
 ```bash
 # SparkApplication nel namespace
@@ -99,20 +99,20 @@ kubectl get pods -n bigintensive -l spark-role=executor
 kubectl logs -n bigintensive <driver-pod>
 ```
 
-## Troubleshooting rapido
+## Quick Troubleshooting
 
-SparkApplication non parte:
+SparkApplication does not start:
 
-- verificare Spark Operator nel namespace spark-operator
-- verificare serviceAccount spark e RBAC in k3s/05-spark-and-jupyter.yaml
-- verificare immagine davidefast/bigintensive-sparkwithdependencies:latest disponibile
+- check Spark Operator in the spark-operator namespace
+- check serviceAccount spark and RBAC in k3s/05-spark-and-jupyter.yaml
+- check that the image davidefast/bigintensive-sparkwithdependencies:latest is available
 
-Errori JDBC:
+JDBC Errors:
 
-- verificare presenza jar in /opt/spark/jars dentro l'immagine
-- verificare credenziali/env da ConfigMap e Secret bigintensive
+- check that the jars are present in /opt/spark/jars inside the image
+- check credentials/env from ConfigMap and Secret bigintensive
 
-Executor non scalano:
+Executors do not scale:
 
-- verificare spark.dynamicAllocation.* nella SparkApplication creata
-- verificare risorse nodo disponibili (cpu/mem)
+- check spark.dynamicAllocation.\* in the created SparkApplication
+- check available node resources (cpu/mem)

@@ -50,6 +50,11 @@ function getKubernetesErrorMessage(error) {
   return error?.body?.message || error?.response?.body?.message || error?.message || "Errore Kubernetes sconosciuto";
 }
 
+function isKubernetesForbiddenError(error) {
+  const statusCode = error?.statusCode || error?.status || error?.response?.statusCode || error?.body?.code;
+  return Number(statusCode) === 403;
+}
+
 function toInteger(value, fallback = 0) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -100,19 +105,29 @@ async function submitEtlArgoWorkflow({ requestedReplicas } = {}) {
 }
 
 async function getActiveArgoEtlWorkflow() {
-  const response = await k8sCustomObjectsApi.listNamespacedCustomObject({
-    group: argoGroup,
-    version: argoVersion,
-    namespace: kubernetesNamespace,
-    plural: argoWorkflowsPlural,
-    labelSelector: "app=elt-copy-workout,elt-orchestrator=argo",
-  });
+  try {
+    const response = await k8sCustomObjectsApi.listNamespacedCustomObject({
+      group: argoGroup,
+      version: argoVersion,
+      namespace: kubernetesNamespace,
+      plural: argoWorkflowsPlural,
+      labelSelector: "app=elt-copy-workout,elt-orchestrator=argo",
+    });
 
-  const items = response?.items || response?.body?.items || [];
-  return items.find((workflow) => {
-    const phase = workflow?.status?.phase;
-    return phase !== "Succeeded" && phase !== "Failed" && phase !== "Error";
-  });
+    const items = response?.items || response?.body?.items || [];
+    return items.find((workflow) => {
+      const phase = workflow?.status?.phase;
+      return phase !== "Succeeded" && phase !== "Failed" && phase !== "Error";
+    });
+  } catch (error) {
+    if (isKubernetesForbiddenError(error)) {
+      console.warn(
+        "RBAC: list workflows non consentito al backend-controller. Salto il controllo workflow attivo e provo la creazione.",
+      );
+      return null;
+    }
+    throw error;
+  }
 }
 
 // ============================ SERVER ===============================
@@ -297,9 +312,12 @@ app.post("/api/v1/startELTArgoProcess", async (req, res) => {
   } catch (error) {
     const message = getKubernetesErrorMessage(error);
     console.error("Errore avviando workflow Argo ELT:", message);
+    const errorWithHint = isKubernetesForbiddenError(error)
+      ? `${message} | Verifica RBAC backend: kubectl apply -f k3s/03-backend.yaml`
+      : message;
     res.status(500).json({
       success: false,
-      error: message,
+      error: errorWithHint,
     });
   }
 });
