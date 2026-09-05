@@ -159,7 +159,7 @@ def main():
 
     df_ml = df_preanalisi.select(colonne_da_analizzare).na.drop()
 
-    righe_ml = df_ml.count()
+    righe_ml = df_ml.limit(2).count()
     if righe_ml < 2:
         print(
             f"Correlazione non calcolabile: disponibili {righe_ml} righe complete, "
