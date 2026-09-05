@@ -18,9 +18,10 @@ k3s/
 ├── 06-ingress.yaml
 ├── 07-clickhouse.yaml
 ├── 08-kafka-consumer.yaml
-├── 09-elt-copy-workout.yaml
-├── 10-smartwatch-simulator.yaml
-├── 11-generate-postgresql-samples.yaml
+├── 9-smartwatch-simulator.yaml
+├── 10-generate-postgresql-samples.yaml
+├── 11-argo-elt.yaml
+├── install-argo-workflows.sh
 ├── deploy-all.sh
 └── validate-deploy.sh
 ```
@@ -52,9 +53,17 @@ k3s/
   - StatefulSet with 2 minimum and 6 maximum replicas, scaled by KEDA from Kafka consumer lag.
   - Service for metrics exposure.
   - Liveness and readiness probes.
-- `09-elt-copy-workout.yaml`
-  - Hourly CronJob that copies PostgreSQL workouts to ClickHouse staging.
-  - Executes the ClickHouse transformation from `database/clickhouse/script.sql`.
+- `9-smartwatch-simulator.yaml`
+  - Simulated smartwatch data generator.
+  - Deployment with configurable number of replicas.
+  - Service for internal communication.
+- `10-generate-postgresql-samples.yaml`
+  - Job to populate PostgreSQL with sample data.
+  - Depends on PostgreSQL being ready.
+- `11-argo-elt.yaml`
+  - ServiceAccount + RBAC for Argo ELT workers.
+  - WorkflowTemplate that executes: planning -> parallel ingest -> single finalize.
+  - CronWorkflow at 02:00 (Europe/Rome) for nightly ELT orchestration.
 
 ## Apply order
 
@@ -62,7 +71,7 @@ The expected order is fixed and implemented by `deploy-all.sh`:
 
 1. `00-namespace-and-secrets.yaml`
 2. `01-postgresql.yaml`
-3. `11-generate-postgresql-samples.yaml`
+3. `10-generate-postgresql-samples.yaml`
 4. `02-kafka.yaml`
 5. `02b-kafka-topics.yaml`
 6. `03-backend.yaml`
@@ -71,8 +80,9 @@ The expected order is fixed and implemented by `deploy-all.sh`:
 9. `06-ingress.yaml`
 10. `07-clickhouse.yaml`
 11. `08-kafka-consumer.yaml` (requires Kafka, PostgreSQL, ClickHouse ready)
-12. `09-elt-copy-workout.yaml` (requires PostgreSQL and ClickHouse ready)
-13. `10-smartwatch-simulator.yaml`
+12. `9-smartwatch-simulator.yaml`
+13. `10-generate-postgresql-samples.yaml`
+14. `11-argo-elt.yaml`
 
 Kafka topic replication is configured for three brokers with `min.insync.replicas=2`.
 The topic bootstrap Job does not change the replication factor of topics that already

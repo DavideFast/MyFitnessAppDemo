@@ -6,7 +6,6 @@ Questa cartella centralizza la configurazione dei topic Kafka in modo ordinato e
 
 - `topics.json`: definizioni canoniche dei topic da creare
 - `scripts/create-topics.sh`: script per ambiente Linux/macOS
-- `scripts/create-topics.ps1`: script per Windows PowerShell
 
 ## Topic principali
 
@@ -18,6 +17,8 @@ I topic attualmente previsti sono:
 - `smartwatch-status`
 - `spark-analytics`
 - `system-events`
+
+Those topics are all example topics except for heart-rate-events, which is used for real-time heart rate monitoring.
 
 ## Creazione topic
 

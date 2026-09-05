@@ -1,0 +1,281 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elt-argo-runner
+  namespace: bigintensive
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: elt-argo-runner-nodes-read
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: elt-argo-runner-nodes-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: elt-argo-runner-nodes-read
+subjects:
+  - kind: ServiceAccount
+    name: elt-argo-runner
+    namespace: bigintensive
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: elt-pipeline-template
+  namespace: bigintensive
+spec:
+  serviceAccountName: elt-argo-runner
+  entrypoint: elt-pipeline
+  arguments:
+    parameters:
+      - name: requested-replicas
+        value: ""
+  templates:
+    - name: elt-pipeline
+      steps:
+        - - name: plan
+            template: compute-plan
+            arguments:
+              parameters:
+                - name: requested-replicas
+                  value: "{{workflow.parameters.requested-replicas}}"
+        - - name: ingest
+            template: ingest-fanout
+            arguments:
+              parameters:
+                - name: start-id
+                  value: "{{steps.plan.outputs.parameters.start-id}}"
+                - name: end-id
+                  value: "{{steps.plan.outputs.parameters.end-id}}"
+                - name: replicas
+                  value: "{{steps.plan.outputs.parameters.replicas}}"
+                - name: total-workouts
+                  value: "{{steps.plan.outputs.parameters.total-workouts}}"
+        - - name: finalize
+            template: finalize
+            arguments:
+              parameters:
+                - name: raw-rows-pending
+                  value: "{{steps.plan.outputs.parameters.raw-rows-pending}}"
+
+    - name: compute-plan
+      inputs:
+        parameters:
+          - name: requested-replicas
+      script:
+        image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
+        imagePullPolicy: Always
+        command: [python]
+        envFrom:
+          - configMapRef:
+              name: bigintensive-config
+          - secretRef:
+              name: bigintensive-secrets
+        source: |
+          import json
+          import os
+          import ssl
+          import urllib.request
+          import psycopg
+          import clickhouse_connect
+
+          def ready_nodes_count():
+              host = os.getenv("KUBERNETES_SERVICE_HOST")
+              port = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+              if not host:
+                  return 1
+
+              token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+              ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+              with open(token_path, encoding="utf-8") as f:
+                  token = f.read().strip()
+
+              req = urllib.request.Request(
+                  f"https://{host}:{port}/api/v1/nodes",
+                  headers={"Authorization": f"Bearer {token}"},
+              )
+              context = ssl.create_default_context(cafile=ca_path)
+              with urllib.request.urlopen(req, context=context, timeout=10) as response:
+                  payload = json.loads(response.read().decode("utf-8"))
+
+              count = 0
+              for node in payload.get("items", []):
+                  if node.get("spec", {}).get("unschedulable"):
+                      continue
+                  conditions = node.get("status", {}).get("conditions", [])
+                  ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+                  if ready:
+                      count += 1
+              return max(1, count)
+
+          pg = psycopg.connect(
+              host=os.getenv("POSTGRES_HOST", "postgres"),
+              port=int(os.getenv("POSTGRES_PORT", "5432")),
+              dbname=os.getenv("POSTGRES_DB", "bigintensive"),
+              user=os.getenv("POSTGRES_USER", "postgres"),
+              password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+          )
+
+          ch = clickhouse_connect.get_client(
+              host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+              port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
+              username=os.getenv("CLICKHOUSE_USER", "default"),
+              password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+              database=os.getenv("CLICKHOUSE_DB", "bigintensive"),
+          )
+
+          with pg.cursor() as cur:
+              cur.execute("SELECT COALESCE(MAX(id), 0) FROM allenamenti")
+              postgres_max_id = int(cur.fetchone()[0] or 0)
+
+          max_final_row = ch.query("SELECT max(allenamento_id) FROM bigintensive.allenamenti").result_rows[0][0]
+          max_raw_row = ch.query("SELECT max(allenamento_id) FROM bigintensive.allenamenti_raw").result_rows[0][0]
+          raw_rows_pending = int(ch.query("SELECT count() FROM bigintensive.allenamenti_raw").result_rows[0][0] or 0)
+
+          max_final = int(max_final_row) if max_final_row is not None else 0
+          max_raw = int(max_raw_row) if max_raw_row is not None else 0
+
+          start_id = max(max_final, max_raw) + 1
+          end_id = postgres_max_id
+          total_workouts = max(0, (end_id - start_id) + 1)
+
+          ready_nodes = ready_nodes_count()
+          requested = "{{inputs.parameters.requested-replicas}}".strip()
+          requested_replicas = int(requested) if requested.isdigit() else ready_nodes
+          replicas = max(1, min(requested_replicas, ready_nodes))
+          if total_workouts > 0:
+              replicas = max(1, min(replicas, total_workouts))
+          else:
+              replicas = 1
+
+          os.makedirs("/tmp/argo-out", exist_ok=True)
+
+          with open("/tmp/argo-out/start-id", "w", encoding="utf-8") as f:
+              f.write(str(start_id))
+          with open("/tmp/argo-out/end-id", "w", encoding="utf-8") as f:
+              f.write(str(end_id))
+          with open("/tmp/argo-out/replicas", "w", encoding="utf-8") as f:
+              f.write(str(replicas))
+          with open("/tmp/argo-out/total-workouts", "w", encoding="utf-8") as f:
+              f.write(str(total_workouts))
+          with open("/tmp/argo-out/raw-rows-pending", "w", encoding="utf-8") as f:
+              f.write(str(raw_rows_pending))
+
+          pg.close()
+          ch.close()
+      outputs:
+        parameters:
+          - name: start-id
+            valueFrom:
+              path: /tmp/argo-out/start-id
+          - name: end-id
+            valueFrom:
+              path: /tmp/argo-out/end-id
+          - name: replicas
+            valueFrom:
+              path: /tmp/argo-out/replicas
+          - name: total-workouts
+            valueFrom:
+              path: /tmp/argo-out/total-workouts
+          - name: raw-rows-pending
+            valueFrom:
+              path: /tmp/argo-out/raw-rows-pending
+
+    - name: ingest-fanout
+      inputs:
+        parameters:
+          - name: start-id
+          - name: end-id
+          - name: replicas
+          - name: total-workouts
+      steps:
+        - - name: ingest-worker
+            template: ingest-worker
+            arguments:
+              parameters:
+                - name: start-id
+                  value: "{{inputs.parameters.start-id}}"
+                - name: end-id
+                  value: "{{inputs.parameters.end-id}}"
+                - name: replicas
+                  value: "{{inputs.parameters.replicas}}"
+                - name: worker-index
+                  value: "{{item}}"
+            withSequence:
+              count: "{{inputs.parameters.replicas}}"
+
+    - name: ingest-worker
+      inputs:
+        parameters:
+          - name: start-id
+          - name: end-id
+          - name: replicas
+          - name: worker-index
+      container:
+        image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
+        imagePullPolicy: Always
+        command: [python, copyWorkoutToClickhouse.py]
+        envFrom:
+          - configMapRef:
+              name: bigintensive-config
+          - secretRef:
+              name: bigintensive-secrets
+        env:
+          - name: ELT_RUN_MODE
+            value: ingest
+          - name: ELT_GLOBAL_START_ID
+            value: "{{inputs.parameters.start-id}}"
+          - name: ELT_GLOBAL_END_ID
+            value: "{{inputs.parameters.end-id}}"
+          - name: ELT_TOTAL_WORKERS
+            value: "{{inputs.parameters.replicas}}"
+          - name: ELT_WORKER_INDEX
+            value: "{{inputs.parameters.worker-index}}"
+
+    - name: finalize
+      inputs:
+        parameters:
+          - name: raw-rows-pending
+      container:
+        image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
+        imagePullPolicy: Always
+        command: [python, copyWorkoutToClickhouse.py]
+        envFrom:
+          - configMapRef:
+              name: bigintensive-config
+          - secretRef:
+              name: bigintensive-secrets
+        env:
+          - name: ELT_RUN_MODE
+            value: finalize
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: elt-pipeline-nightly
+  namespace: bigintensive
+spec:
+  schedule: "0 2 * * *"
+  timezone: Europe/Rome
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  workflowMetadata:
+    labels:
+      app: elt-copy-workout
+      elt-orchestrator: argo
+  workflowSpec:
+    workflowTemplateRef:
+      name: elt-pipeline-template
+    arguments:
+      parameters:
+        - name: requested-replicas
+          value: ""

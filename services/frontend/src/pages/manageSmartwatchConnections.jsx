@@ -33,51 +33,23 @@ export default function ManageSmartwatchConnections() {
       });
   };
 
-  const avviaELT = () => {
-    fetch(`${apiBaseUrl}/api/v1/startELTProcess`, { method: "POST" })
-      .then((response) => response.json())
-      .then((data) => {
-        if (!data.success) {
-          throw new Error(`Errore nella richiesta: ${data.error}`);
-        }
-        console.log("ELT avviato:", data);
-        alert("ELT avviato. Controlla la console per i dettagli.");
-      })
-      .catch((err) => {
-        console.error("Errore nell'avvio dell'ELT:", err);
-        alert(`Errore nell'avvio dell'ELT: ${err.message}`);
-      });
-  };
-
-  const fermaELT = () => {
-    fetch(`${apiBaseUrl}/api/v1/stopELTProcess`, { method: "POST" })
-      .then((response) => response.json())
-      .then((data) => {
-        if (!data.success) {
-          throw new Error(`Errore nella richiesta: ${data.error}`);
-        }
-        console.log("ELT fermato:", data);
-        alert("ELT fermato. Controlla la console per i dettagli.");
-      })
-      .catch((err) => {
-        console.error("Errore nel fermare l'ELT:", err);
-        alert(`Errore nel fermare l'ELT: ${err.message}`);
-      });
-  };
-
-  const finalizeELT = () => {
-    fetch(`${apiBaseUrl}/api/v1/finalizeELTProcess`, { method: "POST" })
+  const avviaELTArgo = () => {
+    fetch(`${apiBaseUrl}/api/v1/startELTArgoProcess`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    })
       .then((response) => response.json())
       .then((data) => {
         if (!data.success) {
           throw new Error(`Errore nella richiesta: ${data.error || data.message}`);
         }
-        console.log("ELT finalize:", data);
-        alert(data.message || "Finalize ELT avviato.");
+        console.log("ELT Argo avviato:", data);
+        alert(data.message || "Workflow Argo ELT avviato.");
       })
       .catch((err) => {
-        console.error("Errore nel finalize ELT:", err);
-        alert(`Errore nel finalize ELT: ${err.message}`);
+        console.error("Errore nell'avvio ELT Argo:", err);
+        alert(`Errore nell'avvio ELT Argo: ${err.message}`);
       });
   };
 
@@ -89,10 +61,8 @@ export default function ManageSmartwatchConnections() {
 
       <br />
       <br />
-      <h1>Gestione processo ELT</h1>
-      <button onClick={avviaELT}>Avvia processo ELT</button>
-      <button onClick={finalizeELT}>Finalize ELT (flush unico)</button>
-      <button onClick={fermaELT}>Ferma processo ELT</button>
+      <h1>Gestione processo ELT (Argo)</h1>
+      <button onClick={avviaELTArgo}>Avvia processo ELT (Argo)</button>
 
       <br />
       <br />

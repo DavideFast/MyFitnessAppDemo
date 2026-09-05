@@ -4,9 +4,8 @@ import dotenv from "dotenv";
 
 import { createSystemRouter } from "./routes/systemRoutes.js";
 import { createServerContext } from "./bootstrap/serverContext.js";
-import { createClickhouseClient } from "./db/pool.js";
 import { Kafka } from "kafkajs";
-import { AppsV1Api, BatchV1Api, CustomObjectsApi, KubeConfig } from "@kubernetes/client-node";
+import { AppsV1Api, CustomObjectsApi, KubeConfig } from "@kubernetes/client-node";
 
 // ============================ CONFIGURAZIONE ===============================
 
@@ -14,12 +13,13 @@ import { AppsV1Api, BatchV1Api, CustomObjectsApi, KubeConfig } from "@kubernetes
 const kubeConfig = new KubeConfig();
 kubeConfig.loadFromDefault();
 const k8sApi = kubeConfig.makeApiClient(AppsV1Api);
-const k8sBatchApi = kubeConfig.makeApiClient(BatchV1Api);
 const k8sCustomObjectsApi = kubeConfig.makeApiClient(CustomObjectsApi);
 const kubernetesNamespace = process.env.KUBERNETES_NAMESPACE || "bigintensive";
 const eltCronJobName = "elt-copy-workout";
-const eltIngestRole = "ingest";
-const eltFinalizeRole = "finalize";
+const argoGroup = "argoproj.io";
+const argoVersion = "v1alpha1";
+const argoWorkflowsPlural = "workflows";
+const eltArgoWorkflowTemplateName = process.env.ELT_ARGO_WORKFLOW_TEMPLATE || "elt-pipeline-template";
 const runningPopulationJobName = "running-population-analysis";
 const sparkApplicationGroup = "sparkoperator.k8s.io";
 const sparkApplicationVersion = "v1beta2";
@@ -58,123 +58,61 @@ function toInteger(value, fallback = 0) {
   return Math.trunc(parsed);
 }
 
-function chooseIngestReplicas(totalWorkouts) {
-  if (totalWorkouts < 500_000) {
-    return 1;
-  }
-  if (totalWorkouts < 1_000_000) {
-    return 2;
-  }
-  return 3;
-}
-
-function isJobInProgress(job) {
-  const status = job?.status || {};
-  const succeeded = status.succeeded || 0;
-  const failed = status.failed || 0;
-  const hasCompletionTime = Boolean(status.completionTime);
-  return succeeded === 0 && failed === 0 && !hasCompletionTime;
-}
-
-function upsertEnvVars(container, envVars) {
-  const existingEnv = Array.isArray(container.env) ? [...container.env] : [];
-  const envByName = new Map(existingEnv.map((entry) => [entry.name, { ...entry }]));
-
-  for (const entry of envVars) {
-    envByName.set(entry.name, { ...entry });
-  }
-
-  container.env = Array.from(envByName.values());
-}
-
-async function getPostgresMaxWorkoutId() {
-  const result = await context.pool.query("SELECT COALESCE(MAX(id), 0) AS max_id FROM allenamenti");
-  return toInteger(result.rows?.[0]?.max_id, 0);
-}
-
-async function getClickHouseMaxWorkoutId(tableName) {
-  const response = await createClickhouseClient.query({
-    query: `SELECT max(allenamento_id) AS max_id FROM bigintensive.${tableName}`,
-    format: "JSONEachRow",
-  });
-  const rows = await response.json();
-  return toInteger(rows?.[0]?.max_id, 0);
-}
-
-async function getClickHouseRawRowCount() {
-  const response = await createClickhouseClient.query({
-    query: "SELECT count() AS raw_count FROM bigintensive.allenamenti_raw",
-    format: "JSONEachRow",
-  });
-  const rows = await response.json();
-  return toInteger(rows?.[0]?.raw_count, 0);
-}
-
-function buildJobFromCronTemplate(cronJob, { role, mode, runId, replicas = 1, startId, endId }) {
-  const templateSpec = JSON.parse(JSON.stringify(cronJob.spec.jobTemplate.spec));
-  const container = templateSpec.template?.spec?.containers?.[0];
-  if (!container) {
-    throw new Error("Template CronJob ELT non valido: container mancante");
-  }
-
-  const jobLabels = {
-    ...(cronJob.metadata?.labels || {}),
+async function submitEtlArgoWorkflow({ requestedReplicas } = {}) {
+  const workflowLabels = {
     app: eltCronJobName,
-    "elt-role": role,
-    "elt-run-id": runId,
+    "elt-orchestrator": "argo",
   };
 
-  templateSpec.template.metadata = templateSpec.template.metadata || {};
-  templateSpec.template.metadata.labels = {
-    ...(templateSpec.template.metadata.labels || {}),
-    ...jobLabels,
-  };
-
-  const commonEnv = [
-    { name: "ELT_RUN_MODE", value: mode },
-  ];
-
-  if (role === eltIngestRole) {
-    commonEnv.push(
-      { name: "ELT_GLOBAL_START_ID", value: String(startId) },
-      { name: "ELT_GLOBAL_END_ID", value: String(endId) },
-      { name: "ELT_TOTAL_WORKERS", value: String(replicas) },
-      {
-        name: "ELT_WORKER_INDEX",
-        valueFrom: {
-          fieldRef: {
-            fieldPath: "metadata.annotations['batch.kubernetes.io/job-completion-index']",
-          },
-        },
-      },
-    );
+  const parameters = [];
+  if (requestedReplicas !== undefined && requestedReplicas !== null && requestedReplicas !== "") {
+    const replicas = Math.max(1, toInteger(requestedReplicas, 1));
+    parameters.push({ name: "requested-replicas", value: String(replicas) });
   }
 
-  upsertEnvVars(container, commonEnv);
-
-  const jobSpec = {
-    ...templateSpec,
-    ttlSecondsAfterFinished: 1800,
-  };
-
-  if (role === eltIngestRole) {
-    jobSpec.completionMode = "Indexed";
-    jobSpec.completions = replicas;
-    jobSpec.parallelism = replicas;
-  } else {
-    jobSpec.completions = 1;
-    jobSpec.parallelism = 1;
-  }
-
-  return {
-    apiVersion: "batch/v1",
-    kind: "Job",
+  const workflowBody = {
+    apiVersion: `${argoGroup}/${argoVersion}`,
+    kind: "Workflow",
     metadata: {
-      generateName: `${eltCronJobName}-${role}-`,
-      labels: jobLabels,
+      generateName: "elt-argo-manual-",
+      namespace: kubernetesNamespace,
+      labels: workflowLabels,
     },
-    spec: jobSpec,
+    spec: {
+      workflowTemplateRef: {
+        name: eltArgoWorkflowTemplateName,
+      },
+      arguments: {
+        parameters,
+      },
+    },
   };
+
+  const created = await k8sCustomObjectsApi.createNamespacedCustomObject({
+    group: argoGroup,
+    version: argoVersion,
+    namespace: kubernetesNamespace,
+    plural: argoWorkflowsPlural,
+    body: workflowBody,
+  });
+
+  return created?.metadata?.name || created?.body?.metadata?.name;
+}
+
+async function getActiveArgoEtlWorkflow() {
+  const response = await k8sCustomObjectsApi.listNamespacedCustomObject({
+    group: argoGroup,
+    version: argoVersion,
+    namespace: kubernetesNamespace,
+    plural: argoWorkflowsPlural,
+    labelSelector: "app=elt-copy-workout,elt-orchestrator=argo",
+  });
+
+  const items = response?.items || response?.body?.items || [];
+  return items.find((workflow) => {
+    const phase = workflow?.status?.phase;
+    return phase !== "Succeeded" && phase !== "Failed" && phase !== "Error";
+  });
 }
 
 // ============================ SERVER ===============================
@@ -337,89 +275,28 @@ app.post("/api/v1/stopSmartWatchPodSimulator", async (req, res) => {
   }
 });
 
-app.post("/api/v1/startELTProcess", async (req, res) => {
+
+app.post("/api/v1/startELTArgoProcess", async (req, res) => {
   try {
-    const cronJob = await k8sBatchApi.readNamespacedCronJob({
-      name: eltCronJobName,
-      namespace: kubernetesNamespace,
-    });
-
-    await k8sBatchApi.patchNamespacedCronJob({
-      name: eltCronJobName,
-      namespace: kubernetesNamespace,
-      body: [{ op: "add", path: "/spec/suspend", value: false }],
-    });
-
-    // I job manuali bypassano concurrencyPolicy del CronJob: evitiamo run sovrapposti.
-    const existingJobs = await k8sBatchApi.listNamespacedJob({
-      namespace: kubernetesNamespace,
-      labelSelector: `app=${eltCronJobName}`,
-    });
-
-    const runningJob = existingJobs.items.find((job) => isJobInProgress(job));
-
-    if (runningJob) {
+    const activeWorkflow = await getActiveArgoEtlWorkflow();
+    if (activeWorkflow) {
       return res.status(200).json({
         success: true,
-        message: `Processo ELT gia' in esecuzione (${runningJob.metadata.name})`,
+        workflowName: activeWorkflow.metadata?.name,
+        message: `Workflow Argo ELT gia' in esecuzione (${activeWorkflow.metadata?.name}).`,
       });
     }
 
-    const [postgresMaxId, clickhouseFinalMaxId, clickhouseRawMaxId, rawRowsPending] = await Promise.all([
-      getPostgresMaxWorkoutId(),
-      getClickHouseMaxWorkoutId("allenamenti"),
-      getClickHouseMaxWorkoutId("allenamenti_raw"),
-      getClickHouseRawRowCount(),
-    ]);
-
-    const processedMaxId = Math.max(clickhouseFinalMaxId, clickhouseRawMaxId);
-    const startId = processedMaxId + 1;
-    const endId = postgresMaxId;
-
-    if (endId < startId) {
-      return res.status(200).json({
-        success: true,
-        message:
-          rawRowsPending > 0
-            ? `Nessun nuovo allenamento da ingerire. Sono presenti ${rawRowsPending} righe RAW: esegui /api/v1/finalizeELTProcess per il consolidamento.`
-            : "Nessun nuovo allenamento da ingerire.",
-        startId,
-        endId,
-        rawRowsPending,
-      });
-    }
-
-    const totalWorkouts = endId - startId + 1;
-    const replicas = chooseIngestReplicas(totalWorkouts);
-    const runId = `${Date.now()}`;
-
-    const ingestJob = buildJobFromCronTemplate(cronJob, {
-      role: eltIngestRole,
-      mode: "ingest",
-      runId,
-      replicas,
-      startId,
-      endId,
-    });
-
-    await k8sBatchApi.createNamespacedJob({
-      namespace: kubernetesNamespace,
-      body: ingestJob,
-    });
-
+    const workflowName = await submitEtlArgoWorkflow({ requestedReplicas: req.body?.replicas });
     res.status(200).json({
       success: true,
-      message: "Processo ELT ingest avviato",
-      runId,
-      startId,
-      endId,
-      totalWorkouts,
-      replicas,
-      nextStep: "Al termine dell'ingest eseguire /api/v1/finalizeELTProcess",
+      workflowName,
+      templateName: eltArgoWorkflowTemplateName,
+      message: "Workflow Argo ELT avviato.",
     });
   } catch (error) {
     const message = getKubernetesErrorMessage(error);
-    console.error("Errore avviando il processo ELT:", message);
+    console.error("Errore avviando workflow Argo ELT:", message);
     res.status(500).json({
       success: false,
       error: message,
@@ -427,98 +304,6 @@ app.post("/api/v1/startELTProcess", async (req, res) => {
   }
 });
 
-app.post("/api/v1/finalizeELTProcess", async (req, res) => {
-  try {
-    const existingJobs = await k8sBatchApi.listNamespacedJob({
-      namespace: kubernetesNamespace,
-      labelSelector: `app=${eltCronJobName}`,
-    });
-
-    const activeIngestJob = existingJobs.items.find(
-      (job) => job.metadata?.labels?.["elt-role"] === eltIngestRole && isJobInProgress(job),
-    );
-    if (activeIngestJob) {
-      return res.status(409).json({
-        success: false,
-        message: `Finalize bloccato: ingest ancora in esecuzione (${activeIngestJob.metadata?.name}).`,
-      });
-    }
-
-    const activeFinalizeJob = existingJobs.items.find(
-      (job) => job.metadata?.labels?.["elt-role"] === eltFinalizeRole && isJobInProgress(job),
-    );
-    if (activeFinalizeJob) {
-      return res.status(200).json({
-        success: true,
-        message: `Finalize gia' in esecuzione (${activeFinalizeJob.metadata?.name}).`,
-      });
-    }
-
-    const rawRowsPending = await getClickHouseRawRowCount();
-    if (rawRowsPending <= 0) {
-      return res.status(200).json({
-        success: true,
-        message: "Nessuna riga RAW da consolidare.",
-      });
-    }
-
-    const cronJob = await k8sBatchApi.readNamespacedCronJob({
-      name: eltCronJobName,
-      namespace: kubernetesNamespace,
-    });
-
-    const finalizeJob = buildJobFromCronTemplate(cronJob, {
-      role: eltFinalizeRole,
-      mode: "finalize",
-      runId: `${Date.now()}`,
-      replicas: 1,
-    });
-
-    await k8sBatchApi.createNamespacedJob({
-      namespace: kubernetesNamespace,
-      body: finalizeJob,
-    });
-
-    res.status(200).json({
-      success: true,
-      rawRowsPending,
-      message: "Finalize ELT avviato.",
-    });
-  } catch (error) {
-    const message = getKubernetesErrorMessage(error);
-    console.error("Errore avviando finalize ELT:", message);
-    res.status(500).json({
-      success: false,
-      error: message,
-    });
-  }
-});
-
-app.post("/api/v1/stopELTProcess", async (req, res) => {
-  try {
-    await k8sBatchApi.patchNamespacedCronJob({
-      name: eltCronJobName,
-      namespace: kubernetesNamespace,
-      body: [{ op: "add", path: "/spec/suspend", value: true }],
-    });
-    await k8sBatchApi.deleteCollectionNamespacedJob({
-      namespace: kubernetesNamespace,
-      labelSelector: "app=elt-copy-workout",
-      propagationPolicy: "Background",
-    });
-    res.status(200).json({
-      success: true,
-      message: "Processo ELT fermato",
-    });
-  } catch (error) {
-    const message = getKubernetesErrorMessage(error);
-    console.error("Errore fermando il processo ELT:", message);
-    res.status(500).json({
-      success: false,
-      error: message,
-    });
-  }
-});
 
 app.post("/api/v1/startRunningPopulation", async (req, res) => {
   try {

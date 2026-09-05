@@ -57,6 +57,10 @@ pre_deploy_cleanup() {
     # Job template is immutable; remove legacy job before re-applying 07-clickhouse.yaml
     $KUBECTL_CMD delete job clickhouse-init -n "$NAMESPACE" --ignore-not-found=true >/dev/null 2>&1 || true
 
+    # Remove legacy ELT CronJob resources: ELT is now orchestrated by Argo.
+    $KUBECTL_CMD delete cronjob elt-copy-workout -n "$NAMESPACE" --ignore-not-found=true >/dev/null 2>&1 || true
+    $KUBECTL_CMD delete job -n "$NAMESPACE" -l app=elt-copy-workout --ignore-not-found=true >/dev/null 2>&1 || true
+
     # Remove the previous single-StatefulSet topology before applying the two-shard topology.
     # ClickHouse data is disposable in this development deployment.
     $KUBECTL_CMD delete statefulset clickhouse -n "$NAMESPACE" --ignore-not-found=true >/dev/null 2>&1 || true
@@ -80,6 +84,7 @@ apply_manifest "$SCRIPT_DIR/00-namespace-and-secrets.yaml" "Namespace, Secrets &
 # The operator installs cluster-wide CRDs and watches SparkApplication resources.
 bash "$SCRIPT_DIR/install-spark-operator.sh"
 bash "$SCRIPT_DIR/install-keda.sh"
+bash "$SCRIPT_DIR/install-argo-workflows.sh"
 
 # Apply in order
 $KUBECTL_CMD -n "$NAMESPACE" create configmap postgresql-schema \
@@ -87,7 +92,7 @@ $KUBECTL_CMD -n "$NAMESPACE" create configmap postgresql-schema \
     --dry-run=client -o yaml | $KUBECTL_CMD apply -f -
 
 apply_manifest "$SCRIPT_DIR/01-postgresql.yaml" "PostgreSQL Database"
-apply_manifest "$SCRIPT_DIR/11-generate-postgresql-samples.yaml" "PostgreSQL Sample Generator"
+apply_manifest "$SCRIPT_DIR/10-generate-postgresql-samples.yaml" "PostgreSQL Sample Generator"
 apply_manifest "$SCRIPT_DIR/02-kafka.yaml" "Kafka & Kafka UI"
 apply_manifest "$SCRIPT_DIR/02b-kafka-topics.yaml" "Kafka Topic Bootstrap Job"
 apply_manifest "$SCRIPT_DIR/03-backend.yaml" "Backend"
@@ -108,8 +113,8 @@ $KUBECTL_CMD -n "$NAMESPACE" create configmap clickhouse-schema \
 
 apply_manifest "$SCRIPT_DIR/07-clickhouse.yaml" "ClickHouse & ClickHouse Keeper"
 apply_manifest "$SCRIPT_DIR/08-kafka-consumer.yaml" "Kafka Consumer"
-apply_manifest "$SCRIPT_DIR/09-elt-copy-workout.yaml" "PostgreSQL to ClickHouse ELT"
-apply_manifest "$SCRIPT_DIR/10-smartwatch-simulator.yaml" "Smartwatch Simulator"
+apply_manifest "$SCRIPT_DIR/9-smartwatch-simulator.yaml" "Smartwatch Simulator"
+apply_manifest "$SCRIPT_DIR/11-argo-elt.yaml" "Argo ELT Pipeline (manual + 02:00 CronWorkflow)"
 
 echo -e "${GREEN}========================================"
 echo "✓ All resources deployed successfully!"
