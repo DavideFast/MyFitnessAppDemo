@@ -60,6 +60,10 @@ CLICKHOUSE_BATCH_SIZE = 50_000
 # - ingest: solo caricamento PostgreSQL -> RAW (nessuna trasformazione)
 # - finalize: solo consolidamento RAW -> finale
 ELT_RUN_MODE = os.getenv("ELT_RUN_MODE", "ingest").strip().lower()
+ELT_GLOBAL_START_ID = os.getenv("ELT_GLOBAL_START_ID")
+ELT_GLOBAL_END_ID = os.getenv("ELT_GLOBAL_END_ID")
+ELT_TOTAL_WORKERS = int(os.getenv("ELT_TOTAL_WORKERS", "1"))
+ELT_WORKER_INDEX = int(os.getenv("ELT_WORKER_INDEX", os.getenv("JOB_COMPLETION_INDEX", "0")))
 
 
 # ============================================================
@@ -126,10 +130,15 @@ def create_raw_table(ch):
 # RECUPERO ULTIMO ID PRESENTE IN CLICKHOUSE
 # ============================================================
 
-def get_last_allenamento_id(ch):
+def get_last_allenamento_id(ch, min_id=None, max_id=None):
 
-    # La tabella finale viene creata da script.sql, quindi al primo run non esiste ancora.
-    exists = ch.query(
+    where_clause = ""
+    if min_id is not None and max_id is not None:
+        min_value = int(min_id)
+        max_value = int(max_id)
+        where_clause = f"WHERE allenamento_id >= {min_value} AND allenamento_id <= {max_value}"
+
+    final_exists = ch.query(
         """
         SELECT count()
         FROM system.tables
@@ -138,23 +147,69 @@ def get_last_allenamento_id(ch):
         """
     )
 
-    if not exists.result_rows or exists.result_rows[0][0] == 0:
-        print("Tabella bigintensive.allenamenti non ancora presente: checkpoint = 0.")
-        return 0
-
-    result = ch.query(
+    raw_exists = ch.query(
         """
-        SELECT max(allenamento_id)
-        FROM bigintensive.allenamenti
+        SELECT count()
+        FROM system.tables
+        WHERE database = 'bigintensive'
+          AND name = 'allenamenti_raw'
         """
     )
 
-    value = result.result_rows[0][0]
+    max_final = 0
+    max_raw = 0
 
-    if value is None:
-        return 0
+    if final_exists.result_rows and final_exists.result_rows[0][0] > 0:
+        result_final = ch.query(
+            f"""
+            SELECT max(allenamento_id)
+            FROM bigintensive.allenamenti
+            {where_clause}
+            """
+        )
+        value_final = result_final.result_rows[0][0]
+        if value_final is not None:
+            max_final = int(value_final)
 
-    return int(value)
+    if raw_exists.result_rows and raw_exists.result_rows[0][0] > 0:
+        result_raw = ch.query(
+            f"""
+            SELECT max(allenamento_id)
+            FROM bigintensive.allenamenti_raw
+            {where_clause}
+            """
+        )
+        value_raw = result_raw.result_rows[0][0]
+        if value_raw is not None:
+            max_raw = int(value_raw)
+
+    checkpoint = max(max_final, max_raw)
+    return checkpoint
+
+
+def get_worker_range():
+
+    if ELT_GLOBAL_START_ID is None or ELT_GLOBAL_END_ID is None:
+        return None
+
+    global_start = int(ELT_GLOBAL_START_ID)
+    global_end = int(ELT_GLOBAL_END_ID)
+
+    if global_end < global_start:
+        return None
+
+    workers = max(1, ELT_TOTAL_WORKERS)
+    index = max(0, ELT_WORKER_INDEX)
+
+    total = (global_end - global_start) + 1
+    chunk = (total + workers - 1) // workers
+    worker_start = global_start + (index * chunk)
+    worker_end = min(global_end, worker_start + chunk - 1)
+
+    if worker_start > global_end:
+        return None
+
+    return worker_start, worker_end
 
 
 def get_raw_row_count(ch):
@@ -308,15 +363,31 @@ def sync_allenamenti(
         )
 
     # --------------------------------------------------------
-    # Recuperiamo l'ultimo ID già trasferito
+    # Se impostato, la replica lavora solo sul suo range
+    # disgiunto (job indexed).
     # --------------------------------------------------------
 
-    last_id = get_last_allenamento_id(ch)
+    worker_range = get_worker_range()
 
-    print(
-        f"Ultimo allenamento presente in ClickHouse: "
-        f"{last_id:,}"
-    )
+    if worker_range is None and ELT_GLOBAL_START_ID is not None and ELT_GLOBAL_END_ID is not None:
+        print("Range worker vuoto: nessun dato da elaborare per questa replica.")
+        return
+
+    if worker_range is not None:
+        worker_start, worker_end = worker_range
+        last_id = max(get_last_allenamento_id(ch, worker_start, worker_end), worker_start - 1)
+        print(
+            f"Worker index {ELT_WORKER_INDEX}/{max(1, ELT_TOTAL_WORKERS) - 1} range assegnato: {worker_start:,}..{worker_end:,}."
+        )
+        print(
+            f"Checkpoint nel range: {last_id:,}"
+        )
+    else:
+        last_id = get_last_allenamento_id(ch)
+        print(
+            f"Ultimo allenamento presente in ClickHouse: "
+            f"{last_id:,}"
+        )
 
     total_workouts = 0
     total_rows = 0
@@ -333,24 +404,46 @@ def sync_allenamenti(
             # Leggiamo solamente i nuovi record
             # ------------------------------------------------
 
-            cur.execute(
-                """
-                SELECT
-                    id,
-                    athlete_id,
-                    data_allenamento,
-                    struttura_allenamento,
-                    created_at
-                FROM allenamenti
-                WHERE id > %s
-                ORDER BY id
-                LIMIT %s
-                """,
-                (
-                    last_id,
-                    POSTGRES_BATCH_SIZE
+            if worker_range is not None:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        athlete_id,
+                        data_allenamento,
+                        struttura_allenamento,
+                        created_at
+                    FROM allenamenti
+                    WHERE id > %s
+                      AND id <= %s
+                    ORDER BY id
+                    LIMIT %s
+                    """,
+                    (
+                        last_id,
+                        worker_end,
+                        POSTGRES_BATCH_SIZE
+                    )
                 )
-            )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        athlete_id,
+                        data_allenamento,
+                        struttura_allenamento,
+                        created_at
+                    FROM allenamenti
+                    WHERE id > %s
+                    ORDER BY id
+                    LIMIT %s
+                    """,
+                    (
+                        last_id,
+                        POSTGRES_BATCH_SIZE
+                    )
+                )
 
             workouts = cur.fetchall()
 

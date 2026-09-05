@@ -65,6 +65,22 @@ export default function ManageSmartwatchConnections() {
       });
   };
 
+  const finalizeELT = () => {
+    fetch(`${apiBaseUrl}/api/v1/finalizeELTProcess`, { method: "POST" })
+      .then((response) => response.json())
+      .then((data) => {
+        if (!data.success) {
+          throw new Error(`Errore nella richiesta: ${data.error || data.message}`);
+        }
+        console.log("ELT finalize:", data);
+        alert(data.message || "Finalize ELT avviato.");
+      })
+      .catch((err) => {
+        console.error("Errore nel finalize ELT:", err);
+        alert(`Errore nel finalize ELT: ${err.message}`);
+      });
+  };
+
   return (
     <section aria-label="Dati workouts">
       <h1>Gestione connessioni Smartwatch </h1>
@@ -75,6 +91,7 @@ export default function ManageSmartwatchConnections() {
       <br />
       <h1>Gestione processo ELT</h1>
       <button onClick={avviaELT}>Avvia processo ELT</button>
+      <button onClick={finalizeELT}>Finalize ELT (flush unico)</button>
       <button onClick={fermaELT}>Ferma processo ELT</button>
 
       <br />
