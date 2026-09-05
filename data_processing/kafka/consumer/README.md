@@ -1,22 +1,22 @@
 # Kafka Consumer Real-Time Analysis
 
-Consumer Kafka in Java (Kafka Streams) per l'analisi realtime dei campioni smartwatch.
+Kafka Consumer for real-time analysis of smartwatch samples.
 
-## Stato attuale
+## Current Status
 
-- Runtime su Kubernetes tramite StatefulSet: k3s/08-kafka-consumer.yaml
-- Autoscaling tramite KEDA su consumer lag
-- Topic di input principale: heart-rate-events
+- Runtime on Kubernetes via StatefulSet: k3s/08-kafka-consumer.yaml
+- Autoscaling via KEDA based on consumer lag
+- Main input topic: heart-rate-events
 
-## Funzionalita principali
+## Main Features
 
-- Rilevamento immobilita
-- Calcolo velocita media su finestra mobile
-- Analisi deriva cardiaca
-- Salvataggio dati in ClickHouse e PostgreSQL
-- State store persistente su volume (sopravvive ai restart dei pod)
+- Immobility detection
+- Average speed calculation on a sliding window
+- Heart rate drift analysis
+- Data saving in ClickHouse and PostgreSQL
+- Persistent state store on volume (survives pod restarts)
 
-## Struttura package Java
+## Java Package Structure
 
 ```text
 analisi_immediata/
@@ -36,74 +36,52 @@ analisi_immediata/
 	└── Database.java
 ```
 
-## Prerequisiti
+Quick explanation of the classes:
+
+- `ConsumerKafka.java`: main class that starts the Kafka Streams application.
+- `AllarmeNotifier.java`: class responsible for immobility and potentially dangerous situations notifications.
+- `CalcoliMatematici.java`: utility class for calculate distance between GPS positions.
+- `RilevatoreImmobilita.java`: class that detects immobility events and saves them to the state store while they are being monitored.
+- `Configurazione.java`: class that handles application configuration.
+- `CampioneDaSalvare.java`: data model for samples to be saved.
+- `HeartRateSample.java`: data model for heart rate samples.
+- `Posizione.java`: data model for position information.
+- `StatoSessione.java`: data model for session state.
+- `Database.java`: class that manages database interactions.
+
+## Prerequisites
 
 - Java 17
 - Maven 3.9+
 - Docker
-- Cluster k3s con namespace bigintensive
+- Cluster k3s with bigintensive namespace
 
-## Build locale
+## Build Docker Image
 
-```bash
-cd data_processing/kafka/consumer/kafka-consumer-real-time
-mvn clean package -DskipTests
-```
-
-Output JAR:
-
-```text
-target/kafka-consumer-real-time-1.0-SNAPSHOT-jar-with-dependencies.jar
-```
-
-## Build Docker
-
-Dalla root del progetto:
+From the project root:
 
 ```bash
 cd data_processing/kafka/consumer
 docker build -t davidefast/consumer-kafka:latest .
 ```
 
-Script di supporto:
+It will build the jar and the Docker image with the tag `davidefast/consumer-kafka:latest`.
 
-```bash
-cd data_processing/kafka/consumer
+## Deploy on k3s
 
-# Build JAR
-./build.sh
-
-# Build JAR + Docker
-./build.sh --docker
-
-# Build JAR + Docker + Push
-./build.sh --docker --push davidefast
-```
-
-## Deploy su k3s
-
-Percorso consigliato: deploy orchestrato da script principale.
+Recommended path: deploy orchestrated by the main script.
 
 ```bash
 bash k3s/deploy-all.sh
 ```
 
-Deploy solo consumer:
+Deploy only the consumer:
 
 ```bash
 kubectl apply -f k3s/08-kafka-consumer.yaml
 ```
 
-## Cosa contiene 08-kafka-consumer.yaml
-
-- ConfigMap kafka-consumer-config con parametri applicativi
-- StatefulSet kafka-consumer-realtime (repliche iniziali: 2)
-- PVC per state store locale Kafka Streams
-- ScaledObject KEDA (min 2, max 6) basato su lag topic
-- Init container che aspetta bootstrap Kafka e topic disponibili
-- Service headless + service metrics
-
-## Variabili principali
+## Main Variables
 
 Kafka:
 
@@ -112,7 +90,7 @@ Kafka:
 - KAFKA_APPLICATION_ID
 - KAFKA_STATE_DIR
 
-Elaborazione:
+Processing:
 
 - SAMPLE_INTERVAL
 - MAX_CAMPIONI_BATCH
@@ -131,45 +109,31 @@ Database:
 - POSTGRES_USER
 - POSTGRES_PASSWORD (secret)
 
-## Operativita e controlli
+## Operations and Checks
 
 ```bash
-# Stato StatefulSet
+# StatefulSet Status
 kubectl get statefulset kafka-consumer-realtime -n bigintensive
 
-# Pod consumer
+# Consumer Pods
 kubectl get pods -n bigintensive -l app=kafka-consumer
 
-# Scaler KEDA
+# KEDA Scaler
 kubectl get scaledobject kafka-consumer-realtime-scaler -n bigintensive
 
-# Log consumer
+# Consumer Logs
 kubectl logs -f statefulset/kafka-consumer-realtime -n bigintensive
 ```
 
-## Troubleshooting rapido
+## Application Dependencies
 
-Kafka non raggiungibile:
-
-- Verifica KAFKA_BOOTSTRAP_SERVERS in ConfigMap
-- Verifica broker e topic in namespace bigintensive
-
-Consumer in crash loop:
-
-- Controlla secret DB (CLICKHOUSE_PASSWORD, POSTGRES_PASSWORD)
-- Controlla raggiungibilita ClickHouse/PostgreSQL dai pod
-
-Nessun consumo:
-
-- Verifica lag e stato del consumer group rilevatore-immobilita
-- Verifica che il simulatore pubblichi su heart-rate-events
-
-## Versioni dipendenze applicative
-
-Dal pom.xml corrente:
+From the current pom.xml:
 
 - kafka-clients: 3.6.0
 - kafka-streams: 3.6.0
 - clickhouse-jdbc: 0.4.6
 - postgresql: 42.6.0
 - jackson-databind: 2.17.2
+
+> [!TIP]
+> Jackson Databind is used for JSON serialization and deserialization.
