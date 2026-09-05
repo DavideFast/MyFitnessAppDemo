@@ -24,3 +24,12 @@ I parametri sono configurabili tramite variabili d'ambiente:
 
 - `DANGER_EVENT_PROBABILITY`: probabilita' dell'evento per ogni nuova sessione, da `0` a `1`;
 - `DANGER_MIN_SAMPLES` e `DANGER_MAX_SAMPLES`: durata casuale dell'evento in campioni.
+
+# Build Docker Image
+
+To build the Docker image for the simulator, follow these steps:
+
+```bash
+cd MyFitnessAppDemo/services/simulatoreUtenti
+docker build -t simulatore-utenti:latest .
+```

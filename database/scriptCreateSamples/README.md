@@ -12,3 +12,12 @@ Di seguito sono riportati esempi di generazioni.
 - Con 10000 atleti e 150 - 365 allenamenti per atleti all'anno il database pesa 3.2GB.
 - Con 100000 atleti e 150 - 365 allenamenti per atleti all'anno il database pesa 32GB.
 - Con 500000 atleti e 150 - 365 allenamenti per atleti all'anno il database pesa 160GB.
+
+# Build Docker Image
+
+To build and run the Docker image for the script, follow these steps:
+
+```bash
+cd MyFitnessAppDemo/database/scriptCreateSamples
+docker build -t create-samples:latest .
+```

@@ -25,11 +25,11 @@ data_processing/spark/
 
 - Manifest Spark/Jupyter: k3s/05-spark-and-jupyter.yaml
 - Trigger job dal backend: endpoint /api/v1/startRunningPopulation
-- Configurazione base Spark in ConfigMap spark-config
+- Base Spark configuration in ConfigMap spark-config
 
 ## Starting the Analysis Job
 
-Il percorso standard e' chiamare il backend, che crea una SparkApplication con:
+The default way to start the analysis job is by calling the backend, which creates a SparkApplication with:
 
 - image: davidefast/bigintensive-sparkwithdependencies:latest
 - sparkVersion: 3.5.3
@@ -43,7 +43,7 @@ POST /api/v1/startRunningPopulation
 
 ## Actual Spark Configuration (RunningPopulation job)
 
-Parametri principali usati dal backend:
+Main parameters used by the backend:
 
 - spark.dynamicAllocation.enabled=true
 - spark.dynamicAllocation.minExecutors=1
@@ -56,25 +56,25 @@ Parametri principali usati dal backend:
 
 ## Build Spark Image
 
-Il Dockerfile locale prepara un'immagine Spark con:
+The local Dockerfile prepares a Spark image with:
 
 - job Python in /opt/jobs
-- driver JDBC PostgreSQL e ClickHouse
-- dipendenze Python di analisi
+- PostgreSQL and ClickHouse JDBC driver
+- Python analysis dependencies
 
-Esempio build:
+Build example:
 
 ```bash
 cd data_processing/spark
 docker build -t davidefast/bigintensive-sparkwithdependencies:latest .
 ```
 
-## Jupyter (optional)
+## Jupyter (demo)
 
-Jupyter e' disponibile nel cluster per esplorazione e benchmark notebook.
+Jupyter is available in the cluster for notebook exploration and benchmarking.
 
-- URL tipico: http://jupyter.bigintensive.local
-- Token configurato nel manifest corrente: bigintensive
+- Typical URL: http://jupyter.bigintensive.local
+- Token configured in the current manifest: bigintensive
 
 Note: the production RunningPopulation job is started by the backend via SparkApplication, it does not depend on Jupyter.
 
@@ -83,36 +83,4 @@ Note: the production RunningPopulation job is started by the backend via SparkAp
 - ClickHouse (tabella running_samples)
 - PostgreSQL (tabella anthropometric_values)
 
-I dettagli di connessione sono centralizzati in jobs/config.py tramite variabili ambiente.
-
-## Useful Operations
-
-```bash
-# SparkApplication nel namespace
-kubectl get sparkapplications -n bigintensive
-
-# Pod driver/executor Spark
-kubectl get pods -n bigintensive -l spark-role=driver
-kubectl get pods -n bigintensive -l spark-role=executor
-
-# Log driver
-kubectl logs -n bigintensive <driver-pod>
-```
-
-## Quick Troubleshooting
-
-SparkApplication does not start:
-
-- check Spark Operator in the spark-operator namespace
-- check serviceAccount spark and RBAC in k3s/05-spark-and-jupyter.yaml
-- check that the image davidefast/bigintensive-sparkwithdependencies:latest is available
-
-JDBC Errors:
-
-- check that the jars are present in /opt/spark/jars inside the image
-- check credentials/env from ConfigMap and Secret bigintensive
-
-Executors do not scale:
-
-- check spark.dynamicAllocation.\* in the created SparkApplication
-- check available node resources (cpu/mem)
+Connection details are centralized in jobs/config.py via environment variables.

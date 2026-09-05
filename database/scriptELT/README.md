@@ -1,10 +1,19 @@
 # Script per effettuare l'ELT dei dati ricevuti dai client
 
-Questo script è stato creato per effettuare l'ELT (Extract, Load, Transform) dei dati ricevuti dai client e memorizzati nel database PostgreSQL verso il database Clickhouse destinato all'analisi massiva dei dati.
+This script is designed to perform the ELT (Extract, Load, Transform) of data received from clients and stored in the PostgreSQL database to the Clickhouse database intended for massive data analysis.
 
-Lo script viene eseguito in due step:
+The script is executed in two steps:
 
-1. **Estrazione e caricamento dei dati**: i dati vengono estratti dal database PostgreSQL e caricati nel database Clickhouse.
-2. **Trasformazione dei dati**: i dati vengono trasformati nel database Clickhouse per ottimizzare le query e le analisi dei dati.
+1. **Data extraction and loading**: data is extracted from the PostgreSQL database and loaded into the Clickhouse database.
+2. **Data transformation**: data is transformed in the Clickhouse database to optimize queries and data analysis.
 
-Vengono estratti da Clickhouse e non in Postgresql poichè Clickhouse è ottimizzato per l'analisi dei dati in tempo reale e consente di eseguire query complesse in modo efficiente. Altrimenti doveva essere lo script python in se per se a fare l'estrazione dei dati da Postgresql e caricarli in Clickhouse, ma questo avrebbe comportato un carico maggiore sul server e tempi di esecuzione più lunghi.
+Data is extracted from Clickhouse and not from Postgresql because Clickhouse is optimized for real-time data analysis and allows complex queries to be executed efficiently. Otherwise, the Python script itself would have to extract data from Postgresql and load it into Clickhouse, but this would result in a higher load on the server and longer execution times.
+
+# Build Docker Image
+
+To build the Docker image for the script, follow these steps:
+
+```bash
+cd MyFitnessAppDemo/database/scriptELT
+docker build -t elt-script:latest .
+```
