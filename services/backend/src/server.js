@@ -67,6 +67,10 @@ function isKubernetesForbiddenError(error) {
   return Number(statusCode) === 403;
 }
 
+function createRequestId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function toInteger(value, fallback = 0) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -75,7 +79,7 @@ function toInteger(value, fallback = 0) {
   return Math.trunc(parsed);
 }
 
-async function submitEtlArgoWorkflow({ requestedReplicas } = {}) {
+async function submitEtlArgoWorkflow({ requestedReplicas, requestId } = {}) {
   const workflowLabels = {
     app: eltCronJobName,
     "elt-orchestrator": "argo",
@@ -105,6 +109,8 @@ async function submitEtlArgoWorkflow({ requestedReplicas } = {}) {
     },
   };
 
+  console.log(`[ELT-ARGO][${requestId}] create workflow: template=${eltArgoWorkflowTemplateName}, requestedReplicas=${parameters[0]?.value || "auto"}`);
+
   const created = await k8sCustomObjectsApi.createNamespacedCustomObject({
     group: argoGroup,
     version: argoVersion,
@@ -116,8 +122,9 @@ async function submitEtlArgoWorkflow({ requestedReplicas } = {}) {
   return created?.metadata?.name || created?.body?.metadata?.name;
 }
 
-async function getActiveArgoEtlWorkflow() {
+async function getActiveArgoEtlWorkflow({ requestId } = {}) {
   try {
+    console.log(`[ELT-ARGO][${requestId}] checking active workflows in namespace=${kubernetesNamespace}`);
     const response = await k8sCustomObjectsApi.listNamespacedCustomObject({
       group: argoGroup,
       version: argoVersion,
@@ -127,15 +134,15 @@ async function getActiveArgoEtlWorkflow() {
     });
 
     const items = response?.items || response?.body?.items || [];
-    return items.find((workflow) => {
+    const active = items.find((workflow) => {
       const phase = workflow?.status?.phase;
       return phase !== "Succeeded" && phase !== "Failed" && phase !== "Error";
     });
+    console.log(`[ELT-ARGO][${requestId}] workflows found=${items.length}, active=${active?.metadata?.name || "none"}`);
+    return active;
   } catch (error) {
     if (isKubernetesForbiddenError(error)) {
-      console.warn(
-        "RBAC: list workflows non consentito al backend-controller. Salto il controllo workflow attivo e provo la creazione.",
-      );
+      console.warn(`[ELT-ARGO][${requestId}] RBAC: list workflows non consentito al backend-controller. Salto il controllo workflow attivo e provo la creazione.`);
       return null;
     }
     throw error;
@@ -302,21 +309,26 @@ app.post("/api/v1/stopSmartWatchPodSimulator", async (req, res) => {
   }
 });
 
-
 app.post("/api/v1/startELTArgoProcess", async (req, res) => {
+  const requestId = createRequestId();
   try {
-    const activeWorkflow = await getActiveArgoEtlWorkflow();
+    console.log(`[ELT-ARGO][${requestId}] request received: replicas=${req.body?.replicas ?? "auto"}`);
+    const activeWorkflow = await getActiveArgoEtlWorkflow({ requestId });
     if (activeWorkflow) {
+      console.log(`[ELT-ARGO][${requestId}] already running: ${activeWorkflow.metadata?.name}`);
       return res.status(200).json({
         success: true,
+        requestId,
         workflowName: activeWorkflow.metadata?.name,
         message: `Workflow Argo ELT gia' in esecuzione (${activeWorkflow.metadata?.name}).`,
       });
     }
 
-    const workflowName = await submitEtlArgoWorkflow({ requestedReplicas: req.body?.replicas });
+    const workflowName = await submitEtlArgoWorkflow({ requestedReplicas: req.body?.replicas, requestId });
+    console.log(`[ELT-ARGO][${requestId}] workflow created: ${workflowName || "unknown-name"}`);
     res.status(200).json({
       success: true,
+      requestId,
       workflowName,
       templateName: eltArgoWorkflowTemplateName,
       message: "Workflow Argo ELT avviato.",
@@ -324,18 +336,16 @@ app.post("/api/v1/startELTArgoProcess", async (req, res) => {
   } catch (error) {
     const message = getKubernetesErrorMessage(error);
     const details = getKubernetesErrorDetails(error);
-    console.error("Errore avviando workflow Argo ELT:", message, details);
-    const errorWithHint = isKubernetesForbiddenError(error)
-      ? `${message} | Verifica RBAC backend: kubectl apply -f k3s/03-backend.yaml`
-      : message;
+    console.error(`[ELT-ARGO][${requestId}] errore avviando workflow Argo ELT:`, message, details);
+    const errorWithHint = isKubernetesForbiddenError(error) ? `${message} | Verifica RBAC backend: kubectl apply -f k3s/03-backend.yaml` : message;
     res.status(500).json({
       success: false,
+      requestId,
       error: errorWithHint,
       debug: details,
     });
   }
 });
-
 
 app.post("/api/v1/startRunningPopulation", async (req, res) => {
   try {
