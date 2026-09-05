@@ -67,19 +67,15 @@ docker build -t davidefast/consumer-kafka:latest .
 
 It will build the jar and the Docker image with the tag `davidefast/consumer-kafka:latest`.
 
-## Deploy on k3s
+## Access the Consumer Logs
 
-Recommended path: deploy orchestrated by the main script.
-
-```bash
-bash k3s/deploy-all.sh
-```
-
-Deploy only the consumer:
+To access the logs of the Kafka consumer running in the k3s cluster, use the following command:
 
 ```bash
-kubectl apply -f k3s/08-kafka-consumer.yaml
+kubectl logs -f statefulset/kafka-consumer-realtime -n bigintensive
 ```
+
+The AllarmeNotifier class simulates notifications for immobility and potentially dangerous situations writing to the logs.
 
 ## Main Variables
 
