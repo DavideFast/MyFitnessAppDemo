@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smartwatch-simulator
+  namespace: bigintensive
+  labels:
+    app: smartwatch-simulator
+    tier: simulator
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: smartwatch-simulator
+  template:
+    metadata:
+      labels:
+        app: smartwatch-simulator
+        tier: simulator
+    spec:
+      containers:
+        - name: smartwatch-simulator
+          image: davidefast/smartwatch-simulator:latest
+          imagePullPolicy: Always
+          env:
+            - name: ENDPOINT_URL
+              value: "http://backend:3001/api/v1/pushToKafka"
+            - name: NUM_ATHLETES
+              value: "50"
+            - name: SAMPLE_INTERVAL
+              value: "5.0"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "300m"
+              memory: "512Mi"

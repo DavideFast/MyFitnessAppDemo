@@ -1,0 +1,200 @@
+# Spark ServiceAccount and RBAC for native Kubernetes
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark
+  namespace: bigintensive
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spark-driver
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spark-driver-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spark-driver
+subjects:
+  - kind: ServiceAccount
+    name: spark
+    namespace: bigintensive
+---
+# Spark Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-config
+  namespace: bigintensive
+data:
+  spark-defaults.conf: |
+    spark.master                                  k8s://https://kubernetes.default:443
+    spark.kubernetes.namespace                    bigintensive
+    spark.kubernetes.authenticate.driver.mounted  true
+    spark.kubernetes.authenticate.executor.mounted true
+    spark.kubernetes.container.image              apache/spark:3.5.3
+    spark.kubernetes.container.image.pullPolicy   IfNotPresent
+    spark.kubernetes.executor.deleteOnTermination true
+    spark.kubernetes.driver.label.version         3.5.3
+    spark.kubernetes.executor.label.version       3.5.3
+    spark.executor.cores                          2
+    spark.executor.memory                         2g
+    spark.dynamicAllocation.enabled               true
+    spark.dynamicAllocation.shuffleTracking.enabled true
+    spark.dynamicAllocation.initialExecutors      1
+    spark.dynamicAllocation.minExecutors          1
+    spark.dynamicAllocation.maxExecutors          4
+    spark.dynamicAllocation.executorIdleTimeout   60s
+    spark.dynamicAllocation.cachedExecutorIdleTimeout 120s
+    spark.sql.shuffle.partitions                  10
+    spark.driver.memory                           2g
+    spark.driver.cores                            2
+  spark-env.sh: |
+    #!/bin/bash
+    export SPARK_LOCAL_IP=$(hostname -I | awk '{print $1}')
+    export PYTHONUNBUFFERED=1
+---
+# Jupyter Notebook Server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jupyter
+  namespace: bigintensive
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jupyter
+  template:
+    metadata:
+      labels:
+        app: jupyter
+    spec:
+      serviceAccountName: spark
+      nodeSelector:
+        bigintensive.io/local-images: "true"
+      containers:
+        - name: jupyter
+          image: apache/spark:3.5.3
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+          ports:
+            - containerPort: 8888
+              name: jupyter
+          env:
+            # Serve a Spark client mode per legare gli executor a questo pod (ownerReference).
+            - name: SPARK_DRIVER_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SPARK_HOME
+              value: /opt/spark
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: POSTGRES_PORT
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: bigintensive-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bigintensive-secrets
+                  key: POSTGRES_PASSWORD
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: KAFKA_BOOTSTRAP_SERVERS
+          command:
+            - sh
+            - -c
+            - |
+              echo "Installing Jupyter and dependencies..."
+              pip install --no-cache-dir jupyter jupyterlab psycopg2-binary kafka-python pandas numpy
+              # Il nome dello zip py4j cambia tra le release di Spark: lo risolviamo a runtime.
+              PY4J=$(ls /opt/spark/python/lib/py4j-*-src.zip 2>/dev/null | head -1)
+              export PYTHONPATH="/opt/spark/python:$PY4J:$PYTHONPATH"
+              if ! python -c "import pyspark" 2>/dev/null; then
+                echo "PySpark non presente nell'immagine, installazione da PyPI..."
+                pip install --no-cache-dir pyspark==3.5.3
+              fi
+              python -c "import pyspark; print('PySpark', pyspark.__version__)"
+              echo "Starting Jupyter Lab..."
+              jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --notebook-dir=/root/work --NotebookApp.token=bigintensive
+          volumeMounts:
+            - name: notebooks
+              mountPath: /root/work
+          # Il pod ospita anche la JVM del driver Spark in client mode: sotto i 4Gi viene OOMKilled.
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "5Gi"
+              cpu: "2000m"
+          livenessProbe:
+            tcpSocket:
+              port: 8888
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 8888
+            initialDelaySeconds: 60
+            periodSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: notebooks
+          hostPath:
+            path: /home/davide/BigIntensive/notebooks
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jupyter
+  namespace: bigintensive
+spec:
+  selector:
+    app: jupyter
+  type: ClusterIP
+  ports:
+    - port: 8888
+      targetPort: 8888
+      name: jupyter
+    - port: 7078
+      targetPort: 7078
+      name: spark-driver
+    - port: 7079
+      targetPort: 7079
+      name: spark-blockmgr

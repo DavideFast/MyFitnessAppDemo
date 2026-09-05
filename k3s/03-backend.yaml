@@ -1,0 +1,169 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-controller
+  namespace: bigintensive
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: smartwatch-simulator-controller
+  namespace: bigintensive
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["smartwatch-simulator"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    resourceNames: ["elt-copy-workout"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "list", "delete", "deletecollection"]
+  - apiGroups: ["sparkoperator.k8s.io"]
+    resources: ["sparkapplications"]
+    verbs: ["get", "list", "create", "delete", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-smartwatch-simulator-controller
+  namespace: bigintensive
+subjects:
+  - kind: ServiceAccount
+    name: backend-controller
+    namespace: bigintensive
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: smartwatch-simulator-controller
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: bigintensive
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: bigintensive
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      serviceAccountName: backend-controller
+      containers:
+        - name: backend
+          image: davidefast/bigintensive-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - secretRef:
+                name: bigintensive-secrets
+            - configMapRef:
+                name: bigintensive-config
+          env:
+            - name: CLICKHOUSE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: CLICKHOUSE_HOST
+            - name: CLICKHOUSE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: CLICKHOUSE_PORT
+            - name: CLICKHOUSE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: CLICKHOUSE_USER
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: CLICKHOUSE_PASSWORD
+            - name: CLICKHOUSE_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: CLICKHOUSE_DATABASE
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: BACKEND_PORT
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CORS_ORIGIN
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: CORS_ORIGIN
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: POSTGRES_PORT
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: bigintensive-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bigintensive-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: POSTGRES_DB
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: KAFKA_BOOTSTRAP_SERVERS
+            - name: PYTHON_BIN
+              valueFrom:
+                configMapKeyRef:
+                  name: bigintensive-config
+                  key: PYTHON_BIN
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 20
+            periodSeconds: 20

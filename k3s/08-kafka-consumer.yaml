@@ -1,0 +1,259 @@
+---
+# Kafka Consumer Real-Time Analysis Deployment
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-consumer-config
+  namespace: bigintensive
+data:
+  # --- Kafka ---
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:19092"
+  KAFKA_TOPIC: "heart-rate-events"
+  KAFKA_APPLICATION_ID: "rilevatore-immobilita"
+  NOME_STATE_STORE: "stato-sessioni"
+  # Deve combaciare con il mountPath del volume state-store
+  KAFKA_STATE_DIR: "/var/lib/kafka-streams"
+  # Margine per le scritture su database prima che Kafka consideri il consumer bloccato
+  MAX_POLL_INTERVAL_MS: "600000"
+  MAX_POLL_RECORDS: "500"
+
+  # --- Elaborazione ---
+  # Deve combaciare con SAMPLE_INTERVAL del simulatore (10-smartwatch-simulator.yaml)
+  SAMPLE_INTERVAL: "5.0"
+  # Campioni accumulati prima di scrivere il batch su ClickHouse
+  MAX_CAMPIONI_BATCH: "2000"
+  # Svuotamento del buffer a tempo, se il batch non si riempie
+  SECONDI_FLUSH_BUFFER: "30"
+  # Tetto ai campioni trattenuti in memoria se il database non risponde
+  MAX_CAMPIONI_SOSPESI: "20000"
+  # Ampiezza in campioni della finestra usata per la velocita
+  FINESTRA_VELOCITA: "5"
+  # Spostamento oltre il quale l'atleta e considerato in movimento
+  SOGLIA_MOVIMENTO_M: "10.0"
+  # Secondi di immobilita prima dell'allarme (convertiti in campioni dal codice)
+  SECONDI_IMMOBILE: "150"
+  SOGLIA_BPM_ALLARME: "180"
+  DESTINATARIO_ALLARME: "+39 333 1234567"
+
+  # --- Database ---
+  CLICKHOUSE_URL: "jdbc:clickhouse://clickhouse:8123/bigintensive"
+  CLICKHOUSE_USER: "default"
+  POSTGRES_URL: "jdbc:postgresql://postgres:5432/bigintensive"
+  POSTGRES_USER: "postgres"
+
+---
+# Scale the Kafka Streams consumer group from 2 to 6 pods according to lag.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: kafka-consumer-realtime-scaler
+  namespace: bigintensive
+spec:
+  scaleTargetRef:
+    name: kafka-consumer-realtime
+    kind: StatefulSet
+  pollingInterval: 15
+  cooldownPeriod: 120
+  minReplicaCount: 2
+  maxReplicaCount: 6
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 180
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka:19092
+        consumerGroup: rilevatore-immobilita
+        topic: heart-rate-events
+        lagThreshold: "1000"
+        activationLagThreshold: "100"
+        offsetResetPolicy: latest
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka-consumer-realtime
+  namespace: bigintensive
+  labels:
+    app: kafka-consumer
+    tier: streaming
+spec:
+  serviceName: kafka-consumer-headless
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: kafka-consumer
+  template:
+    metadata:
+      labels:
+        app: kafka-consumer
+        tier: streaming
+    spec:
+      serviceAccountName: default
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+
+      initContainers:
+        - name: wait-for-kafka
+          image: apache/kafka:3.7.0
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              until /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$KAFKA_BOOTSTRAP_SERVERS" --list >/dev/null 2>&1; do
+                echo "Kafka bootstrap is not ready; retrying in 5 seconds..."
+                sleep 5
+              done
+              # Kafka Streams fallisce con MissingSourceTopicException se il topic non esiste ancora
+              until /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$KAFKA_BOOTSTRAP_SERVERS" --describe --topic "$KAFKA_TOPIC" >/dev/null 2>&1; do
+                echo "Topic $KAFKA_TOPIC not available yet; retrying in 5 seconds..."
+                sleep 5
+              done
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: kafka-consumer-config
+                  key: KAFKA_BOOTSTRAP_SERVERS
+            - name: KAFKA_TOPIC
+              valueFrom:
+                configMapKeyRef:
+                  name: kafka-consumer-config
+                  key: KAFKA_TOPIC
+
+      containers:
+        - name: kafka-consumer
+          image: davidefast/consumer-kafka:latest
+          imagePullPolicy: Always
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+
+          envFrom:
+            - configMapRef:
+                name: kafka-consumer-config
+
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bigintensive-secrets
+                  key: CLICKHOUSE_PASSWORD
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bigintensive-secrets
+                  key: POSTGRES_PASSWORD
+
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - kill -0 1
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - ps aux | grep "[k]afka-consumer.jar" || exit 1
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 2
+
+          volumeMounts:
+            - name: state-store
+              mountPath: /var/lib/kafka-streams
+            - name: logs
+              mountPath: /var/log/kafka-consumer
+
+      volumes:
+        - name: logs
+          emptyDir:
+            sizeLimit: 100Mi
+
+      # Affinity policy to ensure consumer is spread across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - kafka-consumer
+                topologyKey: kubernetes.io/hostname
+
+      # Tolerations per supportare node taints se presenti
+      tolerations:
+        - key: "workload"
+          operator: "Equal"
+          value: "streaming"
+          effect: "NoSchedule"
+
+  # Lo state store di RocksDB sopravvive al riavvio del pod, evitando il restore dal changelog
+  volumeClaimTemplates:
+    - metadata:
+        name: state-store
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-consumer-headless
+  namespace: bigintensive
+  labels:
+    app: kafka-consumer
+    tier: streaming
+spec:
+  clusterIP: None
+  selector:
+    app: kafka-consumer
+  ports:
+    - name: metrics
+      port: 8888
+      targetPort: 8888
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-consumer-service
+  namespace: bigintensive
+  labels:
+    app: kafka-consumer
+    tier: streaming
+spec:
+  type: ClusterIP
+  selector:
+    app: kafka-consumer
+  ports:
+    - name: metrics
+      port: 8888
+      targetPort: 8888
+      protocol: TCP

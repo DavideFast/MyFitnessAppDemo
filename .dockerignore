@@ -1,0 +1,16 @@
+.git/
+.gitignore
+
+.env
+.env.*
+
+postgres/
+kafka/data/
+
+services/backend/node_modules/
+services/frontend/node_modules/
+services/frontend/dist/
+
+**/*.log
+**/*.tmp
+**/*.pid

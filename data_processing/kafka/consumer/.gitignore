@@ -1,0 +1,22 @@
+# Maven
+kafka-consumer-real-time/target/
+kafka-consumer-real-time/.classpath
+kafka-consumer-real-time/.project
+kafka-consumer-real-time/.settings/
+kafka-consumer-real-time/*.jar
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+*.class
+*.o
+*.so
+
+# State store
+/var/lib/kafka-streams/

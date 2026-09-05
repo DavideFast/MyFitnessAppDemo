@@ -1,0 +1,650 @@
+# ClickHouse Distributed Database (2 shard, 2 replicas per shard)
+# Target setup for 3 nodes: 3 Keeper pods + 4 ClickHouse pods
+# ClickHouse Keeper (nativo, moderno, sostituisce Zookeeper)
+# Tables: running_samples, allenamenti, allenamenti_raw
+
+---
+# ClickHouse Keeper ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-keeper-config
+  namespace: bigintensive
+data:
+  config.xml: |
+    <clickhouse>
+      <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-keeper/clickhouse-keeper.log</log>
+        <errorlog>/var/log/clickhouse-keeper/clickhouse-keeper.err.log</errorlog>
+      </logger>
+      <listen_host>0.0.0.0</listen_host>
+      <keeper_server>
+        <tcp_port>2181</tcp_port>
+          <server_id>1</server_id>
+        <snapshot_storage_path>/var/lib/clickhouse-keeper/snapshots</snapshot_storage_path>
+        <log_storage_path>/var/lib/clickhouse-keeper/logs</log_storage_path>
+        <coordination_settings>
+          <operation_timeout_ms>10000</operation_timeout_ms>
+          <session_timeout_ms>30000</session_timeout_ms>
+          <election_timeout_lower_bound_ms>1000</election_timeout_lower_bound_ms>
+          <election_timeout_upper_bound_ms>2000</election_timeout_upper_bound_ms>
+        </coordination_settings>
+        <raft_configuration>
+          <server>
+            <id>1</id>
+            <hostname>clickhouse-keeper-0.clickhouse-keeper.bigintensive.svc.cluster.local</hostname>
+            <port>9444</port>
+          </server>
+            <server>
+              <id>2</id>
+              <hostname>clickhouse-keeper-1.clickhouse-keeper.bigintensive.svc.cluster.local</hostname>
+              <port>9444</port>
+            </server>
+            <server>
+              <id>3</id>
+              <hostname>clickhouse-keeper-2.clickhouse-keeper.bigintensive.svc.cluster.local</hostname>
+              <port>9444</port>
+            </server>
+        </raft_configuration>
+      </keeper_server>
+    </clickhouse>
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse-keeper
+  namespace: bigintensive
+spec:
+  serviceName: clickhouse-keeper
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: clickhouse-keeper
+  template:
+    metadata:
+      labels:
+        app: clickhouse-keeper
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: clickhouse-keeper
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: init-keeper-config
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ordinal="${POD_NAME##*-}"
+              server_id="$((ordinal + 1))"
+              cat > /dynamic-config/config.xml <<EOF
+              <clickhouse>
+                <logger>
+                  <level>information</level>
+                  <log>/var/log/clickhouse-keeper/clickhouse-keeper.log</log>
+                  <errorlog>/var/log/clickhouse-keeper/clickhouse-keeper.err.log</errorlog>
+                </logger>
+                <listen_host>0.0.0.0</listen_host>
+                <keeper_server>
+                  <tcp_port>2181</tcp_port>
+                  <server_id>${server_id}</server_id>
+                  <snapshot_storage_path>/var/lib/clickhouse-keeper/snapshots</snapshot_storage_path>
+                  <log_storage_path>/var/lib/clickhouse-keeper/logs</log_storage_path>
+                  <raft_configuration>
+                    <server><id>1</id><hostname>clickhouse-keeper-0.clickhouse-keeper.bigintensive.svc.cluster.local</hostname><port>9444</port></server>
+                    <server><id>2</id><hostname>clickhouse-keeper-1.clickhouse-keeper.bigintensive.svc.cluster.local</hostname><port>9444</port></server>
+                    <server><id>3</id><hostname>clickhouse-keeper-2.clickhouse-keeper.bigintensive.svc.cluster.local</hostname><port>9444</port></server>
+                  </raft_configuration>
+                </keeper_server>
+              </clickhouse>
+              EOF
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: dynamic-config
+              mountPath: /dynamic-config
+      containers:
+        - name: clickhouse-keeper
+          image: clickhouse/clickhouse-keeper:24.1
+          command:
+            - clickhouse-keeper
+            - --config
+            - /etc/clickhouse-keeper/config.xml
+          ports:
+            - containerPort: 2181
+              name: client
+            - containerPort: 9444
+              name: raft
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse-keeper
+            - name: dynamic-config
+              mountPath: /etc/clickhouse-keeper/config.xml
+              subPath: config.xml
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          startupProbe:
+            tcpSocket:
+              port: 2181
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            tcpSocket:
+              port: 2181
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 2181
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: dynamic-config
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-keeper
+  namespace: bigintensive
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: clickhouse-keeper
+  ports:
+    - port: 2181
+      name: client
+    - port: 9444
+      name: raft
+
+---
+# ClickHouse ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: bigintensive
+data:
+  bigintensive.xml: |
+    <clickhouse>
+      <listen_host>0.0.0.0</listen_host>
+      <timezone>UTC</timezone>
+      <remote_servers>
+        <bigintensive_cluster>
+          <shard>
+            <replica>
+              <host>clickhouse-shard-1-0.clickhouse-shard-1.bigintensive.svc.cluster.local</host>
+              <port>9000</port>
+            </replica>
+            <replica>
+              <host>clickhouse-shard-1-1.clickhouse-shard-1.bigintensive.svc.cluster.local</host>
+              <port>9000</port>
+            </replica>
+          </shard>
+          <shard>
+            <replica>
+              <host>clickhouse-shard-2-0.clickhouse-shard-2.bigintensive.svc.cluster.local</host>
+              <port>9000</port>
+            </replica>
+            <replica>
+              <host>clickhouse-shard-2-1.clickhouse-shard-2.bigintensive.svc.cluster.local</host>
+              <port>9000</port>
+            </replica>
+          </shard>
+        </bigintensive_cluster>
+      </remote_servers>
+      <zookeeper>
+        <node index="1">
+          <host>clickhouse-keeper-0.clickhouse-keeper.bigintensive.svc.cluster.local</host>
+          <port>2181</port>
+        </node>
+        <node index="2">
+          <host>clickhouse-keeper-1.clickhouse-keeper.bigintensive.svc.cluster.local</host>
+          <port>2181</port>
+        </node>
+        <node index="3">
+          <host>clickhouse-keeper-2.clickhouse-keeper.bigintensive.svc.cluster.local</host>
+          <port>2181</port>
+        </node>
+      </zookeeper>
+      <default_replica_path>/clickhouse/tables/{shard}/{database}/{table}</default_replica_path>
+      <default_replica_name>{replica}</default_replica_name>
+    </clickhouse>
+
+  bigintensive-users.xml: |
+    <?xml version="1.0"?>
+    <clickhouse>
+      <profiles>
+        <default>
+          <max_memory_usage>10000000000</max_memory_usage>
+          <use_uncompressed_cache>0</use_uncompressed_cache>
+          <load_balancing>random</load_balancing>
+        </default>
+        <readonly>
+          <readonly>1</readonly>
+        </readonly>
+      </profiles>
+
+      <quotas>
+        <default>
+          <interval>
+            <duration>3600</duration>
+            <queries>0</queries>
+            <errors>0</errors>
+            <result_rows>0</result_rows>
+            <read_rows>0</read_rows>
+            <execution_time>0</execution_time>
+          </interval>
+        </default>
+      </quotas>
+
+      <users>
+        <default>
+          <password></password>
+          <networks>
+            <ip>127.0.0.1</ip>
+            <ip>::1</ip>
+            <ip>0.0.0.0/0</ip>
+          </networks>
+          <profile>default</profile>
+          <quota>default</quota>
+        </default>
+        <readonly>
+          <password></password>
+          <networks>
+            <ip>::1</ip>
+            <ip>127.0.0.1</ip>
+          </networks>
+          <profile>readonly</profile>
+          <quota>default</quota>
+        </readonly>
+      </users>
+    </clickhouse>
+
+---
+# Headless services provide stable DNS names for each shard StatefulSet.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-shard-1
+  namespace: bigintensive
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: clickhouse
+    shard: "1"
+  ports:
+    - port: 8123
+      name: http
+    - port: 9000
+      name: native
+    - port: 9009
+      name: interserver
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-shard-2
+  namespace: bigintensive
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: clickhouse
+    shard: "2"
+  ports:
+    - port: 8123
+      name: http
+    - port: 9000
+      name: native
+    - port: 9009
+      name: interserver
+---
+# ClickHouse shard 1 (two replicas on different Kubernetes nodes)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse-shard-1
+  namespace: bigintensive
+spec:
+  serviceName: clickhouse-shard-1
+  podManagementPolicy: Parallel
+  replicas: 2
+  selector:
+    matchLabels:
+      app: clickhouse
+      shard: "1"
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+        shard: "1"
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: clickhouse
+                  shard: "1"
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: init-clickhouse-macros
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ordinal="${POD_NAME##*-}"
+              cat > /dynamic-config/macros.xml <<EOF
+              <clickhouse><macros><shard>1</shard><replica>$((ordinal + 1))</replica></macros></clickhouse>
+              EOF
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: dynamic-config
+              mountPath: /dynamic-config
+        - name: wait-for-clickhouse-peers
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              for host in \
+                clickhouse-shard-1-0.clickhouse-shard-1.bigintensive.svc.cluster.local \
+                clickhouse-shard-1-1.clickhouse-shard-1.bigintensive.svc.cluster.local \
+                clickhouse-shard-2-0.clickhouse-shard-2.bigintensive.svc.cluster.local \
+                clickhouse-shard-2-1.clickhouse-shard-2.bigintensive.svc.cluster.local; do
+                until nslookup "$host" >/dev/null 2>&1; do sleep 2; done
+              done
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.1
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+          ports:
+            - { containerPort: 8123, name: http }
+            - { containerPort: 9000, name: native }
+            - { containerPort: 9009, name: interserver }
+          env:
+            - { name: CLICKHOUSE_DB, value: bigintensive }
+            - { name: CLICKHOUSE_USER, value: default }
+            - { name: CLICKHOUSE_PASSWORD, value: "" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/clickhouse }
+            - { name: logs, mountPath: /var/log/clickhouse-server }
+            - { name: config, mountPath: /etc/clickhouse-server/config.d/bigintensive.xml, subPath: bigintensive.xml }
+            - { name: config, mountPath: /etc/clickhouse-server/users.d/bigintensive-users.xml, subPath: bigintensive-users.xml }
+            - { name: dynamic-config, mountPath: /etc/clickhouse-server/config.d/zz-macros.xml, subPath: macros.xml }
+          resources:
+            requests: { memory: "1Gi", cpu: "500m" }
+            limits: { memory: "2Gi", cpu: "1000m" }
+          livenessProbe:
+            httpGet: { path: /ping, port: 8123 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /ping, port: 8123 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap: { name: clickhouse-config }
+        - name: dynamic-config
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 100Gi
+---
+# ClickHouse shard 2 (two replicas on different Kubernetes nodes)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse-shard-2
+  namespace: bigintensive
+spec:
+  serviceName: clickhouse-shard-2
+  podManagementPolicy: Parallel
+  replicas: 2
+  selector:
+    matchLabels:
+      app: clickhouse
+      shard: "2"
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+        shard: "2"
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: clickhouse
+                  shard: "2"
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: init-clickhouse-macros
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ordinal="${POD_NAME##*-}"
+              cat > /dynamic-config/macros.xml <<EOF
+              <clickhouse><macros><shard>2</shard><replica>$((ordinal + 1))</replica></macros></clickhouse>
+              EOF
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: dynamic-config
+              mountPath: /dynamic-config
+        - name: wait-for-clickhouse-peers
+          image: busybox:1.36
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              for host in \
+                clickhouse-shard-1-0.clickhouse-shard-1.bigintensive.svc.cluster.local \
+                clickhouse-shard-1-1.clickhouse-shard-1.bigintensive.svc.cluster.local \
+                clickhouse-shard-2-0.clickhouse-shard-2.bigintensive.svc.cluster.local \
+                clickhouse-shard-2-1.clickhouse-shard-2.bigintensive.svc.cluster.local; do
+                until nslookup "$host" >/dev/null 2>&1; do sleep 2; done
+              done
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.1
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+          ports:
+            - { containerPort: 8123, name: http }
+            - { containerPort: 9000, name: native }
+            - { containerPort: 9009, name: interserver }
+          env:
+            - { name: CLICKHOUSE_DB, value: bigintensive }
+            - { name: CLICKHOUSE_USER, value: default }
+            - { name: CLICKHOUSE_PASSWORD, value: "" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/clickhouse }
+            - { name: logs, mountPath: /var/log/clickhouse-server }
+            - { name: config, mountPath: /etc/clickhouse-server/config.d/bigintensive.xml, subPath: bigintensive.xml }
+            - { name: config, mountPath: /etc/clickhouse-server/users.d/bigintensive-users.xml, subPath: bigintensive-users.xml }
+            - { name: dynamic-config, mountPath: /etc/clickhouse-server/config.d/zz-macros.xml, subPath: macros.xml }
+          resources:
+            requests: { memory: "1Gi", cpu: "500m" }
+            limits: { memory: "2Gi", cpu: "1000m" }
+          livenessProbe:
+            httpGet: { path: /ping, port: 8123 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /ping, port: 8123 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap: { name: clickhouse-config }
+        - name: dynamic-config
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 100Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: bigintensive
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: clickhouse
+  ports:
+    - port: 8123
+      name: http
+    - port: 9000
+      name: native
+    - port: 9009
+      name: interserver
+
+---
+# ClickHouse Client Service (per accesso esterno)
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-client
+  namespace: bigintensive
+spec:
+  type: ClusterIP
+  selector:
+    app: clickhouse
+  ports:
+    - port: 8123
+      targetPort: 8123
+      name: http
+    - port: 9000
+      targetPort: 9000
+      name: native
+
+---
+# ClickHouse Init Job (crea tabelle)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clickhouse-init
+  namespace: bigintensive
+spec:
+  template:
+    spec:
+      serviceAccountName: default
+      restartPolicy: Never
+      containers:
+        - name: clickhouse-init
+          image: clickhouse/clickhouse-server:24.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              # Wait for ClickHouse to be ready
+              ready=0
+              for i in $(seq 1 60); do
+                if clickhouse-client --host clickhouse-shard-1-0.clickhouse-shard-1.bigintensive.svc.cluster.local --port 9000 --query "SELECT 1" >/dev/null 2>&1; then
+                  ready=1
+                  break
+                fi
+                echo "Waiting for ClickHouse... ($i/60)"
+                sleep 2
+              done
+
+              if [ "$ready" -ne 1 ]; then
+                echo "ClickHouse is not ready after timeout"
+                exit 1
+              fi
+
+              for host in clickhouse-shard-1-0.clickhouse-shard-1.bigintensive.svc.cluster.local clickhouse-shard-1-1.clickhouse-shard-1.bigintensive.svc.cluster.local clickhouse-shard-2-0.clickhouse-shard-2.bigintensive.svc.cluster.local clickhouse-shard-2-1.clickhouse-shard-2.bigintensive.svc.cluster.local; do
+                ready=0
+                for i in $(seq 1 60); do
+                  if clickhouse-client --host "$host" --port 9000 --query "SELECT 1" >/dev/null 2>&1; then
+                    ready=1
+                    break
+                  fi
+                  echo "Waiting for $host... ($i/60)"
+                  sleep 2
+                done
+                if [ "$ready" -ne 1 ]; then
+                  echo "$host is not ready after timeout"
+                  exit 1
+                fi
+                clickhouse-client --host "$host" --port 9000 --multiquery < /schema/schema.sql
+              done
+
+              echo "ClickHouse initialization completed!"
+          env:
+            - name: CLICKHOUSE_HOST
+              value: clickhouse-shard-1-0.clickhouse-shard-1.bigintensive.svc.cluster.local
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+      volumes:
+        - name: schema
+          configMap:
+            name: clickhouse-schema
