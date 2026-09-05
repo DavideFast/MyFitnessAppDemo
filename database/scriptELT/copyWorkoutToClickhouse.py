@@ -56,6 +56,9 @@ POSTGRES_BATCH_SIZE = 10_000
 # Numero di righe inviate per volta a ClickHouse
 CLICKHOUSE_BATCH_SIZE = 50_000
 
+# Trasformazione incrementale RAW -> finale ogni N allenamenti trasferiti.
+TRANSFORM_EVERY_WORKOUTS = int(os.getenv("ELT_TRANSFORM_EVERY_WORKOUTS", "500000"))
+
 
 # ============================================================
 # CONNESSIONE POSTGRESQL
@@ -146,6 +149,22 @@ def get_last_allenamento_id(ch):
 
     value = result.result_rows[0][0]
 
+    if value is None:
+        return 0
+
+    return int(value)
+
+
+def get_raw_row_count(ch):
+
+    result = ch.query(
+        """
+        SELECT count()
+        FROM bigintensive.allenamenti_raw
+        """
+    )
+
+    value = result.result_rows[0][0]
     if value is None:
         return 0
 
@@ -276,6 +295,18 @@ def sync_allenamenti(
     print("=" * 70)
 
     # --------------------------------------------------------
+    # Se troviamo RAW residua da una run precedente, la
+    # trasformiamo subito prima di continuare il trasferimento.
+    # --------------------------------------------------------
+
+    raw_rows_pending = get_raw_row_count(ch)
+    if raw_rows_pending > 0:
+        print(
+            f"Rilevate {raw_rows_pending:,} righe in allenamenti_raw da consolidare prima della sync."
+        )
+        transform_raw_data(ch)
+
+    # --------------------------------------------------------
     # Recuperiamo l'ultimo ID già trasferito
     # --------------------------------------------------------
 
@@ -288,6 +319,8 @@ def sync_allenamenti(
 
     total_workouts = 0
     total_rows = 0
+    workouts_since_transform = 0
+    postgres_exhausted = False
 
     # --------------------------------------------------------
     # Cursor PostgreSQL
@@ -332,6 +365,7 @@ def sync_allenamenti(
                 print(
                     "Nessun nuovo allenamento da trasferire."
                 )
+                postgres_exhausted = True
 
                 break
 
@@ -419,6 +453,7 @@ def sync_allenamenti(
             last_id = workouts[-1][0]
 
             total_workouts += len(workouts)
+            workouts_since_transform += len(workouts)
 
             print(
                 f"Ultimo ID trasferito: "
@@ -429,6 +464,26 @@ def sync_allenamenti(
                 f"Allenamenti trasferiti in questa esecuzione: "
                 f"{total_workouts:,}"
             )
+
+            if TRANSFORM_EVERY_WORKOUTS > 0 and workouts_since_transform >= TRANSFORM_EVERY_WORKOUTS:
+                print()
+                print(
+                    f"Checkpoint ELT raggiunto ({workouts_since_transform:,} allenamenti): trasformazione incrementale in corso..."
+                )
+                transform_raw_data(ch)
+                workouts_since_transform = 0
+
+    if postgres_exhausted and total_workouts > 0 and workouts_since_transform > 0:
+        print()
+        print(
+            f"Sorgente PostgreSQL esaurita: flush finale di {workouts_since_transform:,} allenamenti residui in corso..."
+        )
+        transform_raw_data(ch)
+    elif total_workouts > 0 and workouts_since_transform > 0:
+        print()
+        print(
+            f"Residuo non consolidato: {workouts_since_transform:,} allenamenti in attesa del prossimo checkpoint ({TRANSFORM_EVERY_WORKOUTS:,})."
+        )
 
     # ========================================================
     # RISULTATO
@@ -521,9 +576,6 @@ def main():
             pg,
             ch
         )
-
-        # Trasformiamo la staging RAW nella tabella finale dopo il trasferimento.
-        transform_raw_data(ch)
 
 
     except KeyboardInterrupt:
