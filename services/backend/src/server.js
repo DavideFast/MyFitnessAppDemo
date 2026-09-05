@@ -50,6 +50,18 @@ function getKubernetesErrorMessage(error) {
   return error?.body?.message || error?.response?.body?.message || error?.message || "Errore Kubernetes sconosciuto";
 }
 
+function getKubernetesErrorDetails(error) {
+  const body = error?.body || error?.response?.body;
+  return {
+    statusCode: Number(error?.statusCode || error?.status || error?.response?.statusCode || body?.code || 0) || 0,
+    reason: body?.reason || error?.name || "Unknown",
+    message: body?.message || error?.message || "Errore Kubernetes sconosciuto",
+    group: body?.details?.group || null,
+    resource: body?.details?.kind || body?.details?.resource || null,
+    name: body?.details?.name || null,
+  };
+}
+
 function isKubernetesForbiddenError(error) {
   const statusCode = error?.statusCode || error?.status || error?.response?.statusCode || error?.body?.code;
   return Number(statusCode) === 403;
@@ -311,13 +323,15 @@ app.post("/api/v1/startELTArgoProcess", async (req, res) => {
     });
   } catch (error) {
     const message = getKubernetesErrorMessage(error);
-    console.error("Errore avviando workflow Argo ELT:", message);
+    const details = getKubernetesErrorDetails(error);
+    console.error("Errore avviando workflow Argo ELT:", message, details);
     const errorWithHint = isKubernetesForbiddenError(error)
       ? `${message} | Verifica RBAC backend: kubectl apply -f k3s/03-backend.yaml`
       : message;
     res.status(500).json({
       success: false,
       error: errorWithHint,
+      debug: details,
     });
   }
 });
