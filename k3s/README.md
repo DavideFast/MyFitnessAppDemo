@@ -108,10 +108,25 @@ If you want these configurations to persist, you need to use the nmcli commands:
 
 ```bash
 sudo nmcli device status
+```
+
+```bash
 sudo nmcli connection down <NOME>
+```
+
+```bash
 sudo nmcli connection delete <NOME>
+```
+
+```bash
 sudo nmcli connection add type ethernet con-name <NOME> ifname <INTERFACE> ip4 <IP_STATIC_NODO>/24
+```
+
+```bash
 sudo nmcli connection up <NOME>
+```
+
+```bash
 sudo nmcli connection show
 ```
 
