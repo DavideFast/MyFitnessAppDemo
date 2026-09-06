@@ -27,43 +27,43 @@ This project is composed by the following components:
 
 ### Frontend
 
-The frontend is necessary to show the database sinergy both with Clickhouse and Postgresql.
-It allow to:
+The frontend is necessary to show the database synergy both with Clickhouse and Postgresql.
+It allows users to:
 
 - Display user information from Postgresql
 - Display workout sessions from Clickhouse
 - Push updates to the backend for Postgresql
 - Start/Stop smartwatch simulator
 - Start/Stop Spark jobs
-- Start/Stop ELT process script
+- Start Argo Workflows for the ELT process
 
 It runs as Kubernetes Deployment with 2 replicas.
 This ensures high availability and load balancing for the frontend component.
 
 ### Backend
 
-The backend do the following operations:
+The backend does the following operations:
 
 - Read/Write operation on Postgresql
 - Read operation on Clickhouse
 - Push events from the smartwatch simulator to Kafka
 - Simulate Spark jobs activation
-- Activate/Deactivate the ELT process script
+- Activate the Argo Workflows for the ELT process
 
 It runs as a Kubernetes Deployment with 2 replicas.
 This provides high availability and load balancing for the backend component.
 
 ### Smartwatch simulator script
 
-Is necessary to simulate user activities and to push them to the backend.
+It is necessary to simulate user activities and to push them to the backend.
 A parallel python script is the best choice but to not overcomplicate the project and put too much stress on the system, a simple script is used.
 
 ### ELT process script
 
-It's function is to read events from Postgresql and copy them to Clickhouse.
+Its function is to read events from Postgresql and copy them to Clickhouse.
 It works periodically to synchronize the data between the two databases: it reads the last id of the events already copied and then copies only the new events.
-It runs periodically through a Kubernetes CronJob and can also be triggered manually from the frontend. Each execution reads only the new events that have not already been copied.
-As with the smartwatch simulator, it is implemented as a simple script even though in a real-world scenario it could be a more complex parallel Python process.
+It runs periodically through Argo Workflows. It is triggered automatically according to the defined schedule and can also be triggered manually from the frontend. Each execution reads only the new events that have not already been copied.
+Using Argo Workflows, the ELT process is managed with better scheduling, monitoring, and error handling capabilities. The number of ingest replicas is computed dynamically from ready cluster nodes and pending workouts to process, ensuring efficient resource utilization.
 
 ### Postgresql
 
@@ -104,13 +104,13 @@ It runs as a Kubernetes StatefulSet with 2 minimum replicas and can scale up to 
 It is used to make data analysis reading data from Clickhouse and Postgresql databases.
 It runs on Kubernetes in client mode to perform data analysis tasks as needed.
 When launched from the Jupyter notebook, the Jupyter pod acts as the Spark driver. The current notebook configuration disables dynamic allocation and requests 4 executor pods; this number can be changed in the notebook configuration.
-When launched from the backend, the backend creates a Kubernetes Job whose pod runs the Spark driver. Dynamic allocation is enabled for this job, so Spark starts with 1 executor pod and can dynamically scale up to 4 executor pods according to the workload and available cluster resources.
+When launched from the backend, it uses Spark Operator to create a SparkApplication with associated pods, where one pod runs the Spark driver. Dynamic allocation is enabled for this SparkApplication, so Spark starts with 1 executor pod and can dynamically scale up to 4 executor pods according to the workload and available cluster resources.
 
 At this moment Spark is used to compute the correlation matrix of the main features that act for the heart derived metrics.
 
 ### Jupyter notebook
 
-It allow to show the Spark reports.
+It allows users to view Spark reports.
 It runs as a Kubernetes Deployment with only one replica because it is mainly used for displaying reports and high availability is not critical for this component.
 
 ### k3s

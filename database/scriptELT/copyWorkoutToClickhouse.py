@@ -44,6 +44,7 @@ CLICKHOUSE_CONFIG = {
     "password": os.getenv("CLICKHOUSE_PASSWORD", ""),
     "database": os.getenv("CLICKHOUSE_DB", "bigintensive"),
 }
+CLICKHOUSE_DATABASE = CLICKHOUSE_CONFIG["database"]
 
 
 # ============================================================
@@ -101,10 +102,10 @@ def create_raw_table(ch):
     print("Controllo tabelle ClickHouse...")
 
     result = ch.query(
-        """
+                f"""
         SELECT name, engine
         FROM system.tables
-        WHERE database = 'bigintensive'
+                WHERE database = '{CLICKHOUSE_DATABASE}'
           AND name IN ('allenamenti', 'allenamenti_raw')
         """
     )
@@ -139,19 +140,19 @@ def get_last_allenamento_id(ch, min_id=None, max_id=None):
         where_clause = f"WHERE allenamento_id >= {min_value} AND allenamento_id <= {max_value}"
 
     final_exists = ch.query(
-        """
+                f"""
         SELECT count()
         FROM system.tables
-        WHERE database = 'bigintensive'
+                WHERE database = '{CLICKHOUSE_DATABASE}'
           AND name = 'allenamenti'
         """
     )
 
     raw_exists = ch.query(
-        """
+                f"""
         SELECT count()
         FROM system.tables
-        WHERE database = 'bigintensive'
+                WHERE database = '{CLICKHOUSE_DATABASE}'
           AND name = 'allenamenti_raw'
         """
     )
@@ -163,7 +164,7 @@ def get_last_allenamento_id(ch, min_id=None, max_id=None):
         result_final = ch.query(
             f"""
             SELECT max(allenamento_id)
-            FROM bigintensive.allenamenti
+            FROM {CLICKHOUSE_DATABASE}.allenamenti
             {where_clause}
             """
         )
@@ -175,7 +176,7 @@ def get_last_allenamento_id(ch, min_id=None, max_id=None):
         result_raw = ch.query(
             f"""
             SELECT max(allenamento_id)
-            FROM bigintensive.allenamenti_raw
+            FROM {CLICKHOUSE_DATABASE}.allenamenti_raw
             {where_clause}
             """
         )
@@ -215,9 +216,9 @@ def get_worker_range():
 def get_raw_row_count(ch):
 
     result = ch.query(
-        """
+        f"""
         SELECT count()
-        FROM bigintensive.allenamenti_raw
+        FROM {CLICKHOUSE_DATABASE}.allenamenti_raw
         """
     )
 
@@ -292,7 +293,7 @@ def insert_clickhouse_batch(
         return
 
     ch.insert(
-        "bigintensive.allenamenti_raw",
+        f"{CLICKHOUSE_DATABASE}.allenamenti_raw",
         rows,
 
         column_names=[
