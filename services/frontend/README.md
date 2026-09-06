@@ -49,6 +49,13 @@ The root path redirects to `/postgres`.
 
 The production image is a multi-stage build: Vite generates the static files and Nginx serves them. The K3s deployment in `k3s/04-frontend.yaml` runs two replicas behind the `frontend` ClusterIP service on port `5173`; its probes request `/`.
 
+Build the image from this directory with the same tag used by K3s:
+
+```bash
+cd services/frontend
+docker build -t davidefast/bigintensive-frontend:latest .
+```
+
 Because Vite variables are resolved during `npm run build`, set `VITE_API_BASE_URL` to the browser-reachable backend URL before building a production image. In the K3s deployment, browser access is normally provided by the ingress configuration in `k3s/06-ingress.yaml`.
 
 ## Useful checks

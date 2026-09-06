@@ -79,6 +79,13 @@ Example Kafka event:
 
 The `Dockerfile` builds the runtime image from Node.js 20 and includes Python plus the scripts dependencies required by backend workflows. The K3s deployment is defined in `k3s/03-backend.yaml` and runs two replicas behind the `backend` ClusterIP service on port `3001`.
 
+Build the image from this directory with the same tag used by K3s:
+
+```bash
+cd services/backend
+docker build -t davidefast/bigintensive-backend:latest .
+```
+
 The deployment imports application settings from the `bigintensive-config` ConfigMap and sensitive values from the `bigintensive-secrets` Secret. It runs with the `backend-controller` service account, whose RBAC permissions allow it to manage only the demo resources declared in the manifest.
 
 ## Useful checks
