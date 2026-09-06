@@ -89,6 +89,13 @@ spec:
               parameters:
                 - name: raw-rows-pending
                   value: "{{steps.plan.outputs.parameters.raw-rows-pending}}"
+        - - name: schedule-next-window
+            template: schedule-next-window
+            when: "{{steps.plan.outputs.parameters.has-more}} == true"
+            arguments:
+              parameters:
+                - name: requested-replicas
+                  value: "{{workflow.parameters.requested-replicas}}"
 
     - name: compute-plan
       inputs:
@@ -155,6 +162,7 @@ spec:
           write_output("replicas", 1)
           write_output("total-workouts", 0)
           write_output("raw-rows-pending", 0)
+          write_output("has-more", "false")
 
           print("[compute-plan] start", flush=True)
 
@@ -202,13 +210,15 @@ spec:
             max_raw = int(max_raw_row) if max_raw_row is not None else 0
 
             start_id = max(max_final, max_raw) + 1
-            end_id = postgres_max_id
+            # One workflow handles one bounded window, shared by all workers.
+            end_id = min(postgres_max_id, start_id + 1_000_000 - 1)
             total_workouts = max(0, (end_id - start_id) + 1)
+            has_more = end_id < postgres_max_id
 
             ready_nodes = ready_nodes_count()
             requested = "{{inputs.parameters.requested-replicas}}".strip()
             requested_replicas = int(requested) if requested.isdigit() else ready_nodes
-            replicas = max(1, min(requested_replicas, ready_nodes))
+            replicas = max(1, min(requested_replicas, ready_nodes, 3))
             if total_workouts > 0:
               replicas = max(1, min(replicas, total_workouts))
             else:
@@ -219,9 +229,10 @@ spec:
             write_output("replicas", replicas)
             write_output("total-workouts", total_workouts)
             write_output("raw-rows-pending", raw_rows_pending)
+            write_output("has-more", str(has_more).lower())
 
             print(
-              f"[compute-plan] done start_id={start_id} end_id={end_id} replicas={replicas} total_workouts={total_workouts} raw_rows_pending={raw_rows_pending}",
+              f"[compute-plan] done start_id={start_id} end_id={end_id} replicas={replicas} total_workouts={total_workouts} has_more={has_more} raw_rows_pending={raw_rows_pending}",
               flush=True,
             )
           except Exception as error:
@@ -250,6 +261,9 @@ spec:
           - name: raw-rows-pending
             valueFrom:
               path: /tmp/argo-out/raw-rows-pending
+          - name: has-more
+            valueFrom:
+              path: /tmp/argo-out/has-more
 
     - name: ingest-fanout
       inputs:
@@ -306,6 +320,29 @@ spec:
             value: "1000000"
           - name: ELT_CYCLE_PAUSE_SECONDS
             value: "30"
+
+    - name: schedule-next-window
+      inputs:
+        parameters:
+          - name: requested-replicas
+      resource:
+        action: create
+        manifest: |
+          apiVersion: argoproj.io/v1alpha1
+          kind: Workflow
+          metadata:
+            generateName: elt-argo-window-
+            namespace: bigintensive
+            labels:
+              app: elt-copy-workout
+              elt-orchestrator: argo
+          spec:
+            workflowTemplateRef:
+              name: elt-pipeline-template
+            arguments:
+              parameters:
+                - name: requested-replicas
+                  value: "{{inputs.parameters.requested-replicas}}"
 
     - name: finalize
       inputs:
