@@ -15,9 +15,9 @@ def main():
     )
 
     # Register both JDBC drivers explicitly in the driver JVM.
-    spark._jvm.java.lang.Class.forName("com.clickhouse.jdbc.ClickHouseDriver")
     spark._jvm.java.lang.Class.forName("org.postgresql.Driver")
 
+    # set log level to WARN to reduce verbosity
     spark.sparkContext.setLogLevel("WARN")
 
     bounds_query = f"""
@@ -37,7 +37,6 @@ def main():
         .load()
         .first()
     )
-
     num_partizioni = 4
     atleta_min = bounds["min_athlete_id"]
     atleta_max = bounds["max_athlete_id"]
