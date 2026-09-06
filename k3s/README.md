@@ -104,43 +104,6 @@ The K3s server node hosts the cluster control and can also run workloads. The ag
 The system is interconnected via a network switch. All nodes are connected via ethernet cable to the switch (without management)
 and therefore must be configured with static IPs. The nodes will have another network card (being Wi-Fi laptops) that they will use to access the internet for updates and package downloads. As well as to simulate remote access to the cluster from an external PC. In this case, the K3s server node must be reachable from the outside via its static IP.
 
-```text
-sudo ip addr add <IP_STATIC_NODE>/24 dev <INTERFACE>
-```
-
-To see the available network interfaces:
-
-```bash
-ip addr show
-```
-
-Only for VirtualBox
-
-```bash
-sudo nmcli device set enp0s3 managed no
-```
-
-```bash
-# IP configuration of the master
-sudo ip addr add 192.168.1.10/24 dev eth0
-```
-
-```bash
-# IP configuration of worker-1
-sudo ip addr add 192.168.1.20/24 dev eth1
-```
-
-```bash
-# IP configuration of worker-2
-sudo ip addr add 192.168.1.30/24 dev enp0s3
-```
-
-Then test the connectivity between the nodes with ping:
-
-```text
-ping <IP_STATIC_NODE>
-```
-
 If you want these configurations to persist, you need to use the nmcli commands:
 
 ```bash
@@ -150,7 +113,12 @@ sudo nmcli connection delete <NOME>
 sudo nmcli connection add type ethernet con-name <NOME> ifname <INTERFACE> ip4 <IP_STATIC_NODO>/24
 sudo nmcli connection up <NOME>
 sudo nmcli connection show
+```
 
+Then test the connectivity between the nodes with ping:
+
+```text
+ping <IP_STATIC_NODE>
 ```
 
 <br>
