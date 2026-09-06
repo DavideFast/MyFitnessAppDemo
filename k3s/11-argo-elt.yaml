@@ -41,15 +41,13 @@ spec:
   templates:
     - name: elt-pipeline
       steps:
-        -
-          - name: plan
+        - - name: plan
             template: compute-plan
             arguments:
               parameters:
                 - name: requested-replicas
                   value: "{{workflow.parameters.requested-replicas}}"
-        -
-          - name: ingest
+        - - name: ingest
             template: ingest-fanout
             arguments:
               parameters:
@@ -61,8 +59,7 @@ spec:
                   value: "{{steps.plan.outputs.parameters.replicas}}"
                 - name: total-workouts
                   value: "{{steps.plan.outputs.parameters.total-workouts}}"
-        -
-          - name: finalize
+        - - name: finalize
             template: finalize
             arguments:
               parameters:
@@ -76,6 +73,7 @@ spec:
       script:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
+        terminationMessagePolicy: FallbackToLogsOnError
         command: [python, -u]
         envFrom:
           - configMapRef:
@@ -262,6 +260,7 @@ spec:
       container:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
+        terminationMessagePolicy: FallbackToLogsOnError
         command: [python, -u, copyWorkoutToClickhouse.py]
         envFrom:
           - configMapRef:
@@ -287,6 +286,7 @@ spec:
       container:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
+        terminationMessagePolicy: FallbackToLogsOnError
         command: [python, -u, copyWorkoutToClickhouse.py]
         envFrom:
           - configMapRef:
