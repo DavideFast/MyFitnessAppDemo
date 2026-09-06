@@ -5,6 +5,30 @@ metadata:
   namespace: bigintensive
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: elt-argo-runner-argo-access
+  namespace: bigintensive
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows", "workflowtaskresults"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: elt-argo-runner-argo-access
+  namespace: bigintensive
+subjects:
+  - kind: ServiceAccount
+    name: elt-argo-runner
+    namespace: bigintensive
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: elt-argo-runner-argo-access
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: elt-argo-runner-nodes-read
