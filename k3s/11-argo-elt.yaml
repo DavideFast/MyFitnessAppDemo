@@ -89,6 +89,9 @@ spec:
               parameters:
                 - name: raw-rows-pending
                   value: "{{steps.plan.outputs.parameters.raw-rows-pending}}"
+        - - name: pause-before-next-window
+            template: pause-before-next-window
+            when: "{{steps.plan.outputs.parameters.has-more}} == true"
         - - name: schedule-next-window
             template: schedule-next-window
             when: "{{steps.plan.outputs.parameters.has-more}} == true"
@@ -320,6 +323,10 @@ spec:
             value: "1000000"
           - name: ELT_CYCLE_PAUSE_SECONDS
             value: "30"
+
+    - name: pause-before-next-window
+      suspend:
+        duration: 30s
 
     - name: schedule-next-window
       inputs:
