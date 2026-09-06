@@ -138,7 +138,10 @@ def main():
         .select("timestamp", "velocita_media", "Deriva_cardiaca_percentuale", "athlete_id", "session_id")
 
 
-    df_conteggio_corse = primo_punto_di_crisi_per_sessione.groupBy("athlete_id").agg(countDistinct("session_id").alias("numero_corse"))
+    # Count all valid running sessions, not only sessions that reached a crisis point.
+    df_conteggio_corse = df_pulito_null.groupBy("athlete_id").agg(
+        countDistinct("session_id").alias("numero_corse")
+    )
     # join con Postgres eseguito qui: una sola riga per sessione, non tutte le righe di crisi
     crisi = primo_punto_di_crisi_per_sessione.alias("crisi")
     antropometria = df_postgres_ridotto.alias("antropometria")
@@ -175,8 +178,14 @@ def main():
     df_preanalisi = primo_punto_di_crisi_per_sessione.join(df_conteggio_corse, ["athlete_id"], how="left")
 
 
-    # Vediamo se c'è correlazione rispetto all'altezza, al peso o al BMI
-    colonne_da_analizzare = ["peso_kg", "altezza_cm", "BMI", "velocita_media","numero_corse"]
+    # BMI is excluded because it is deterministically derived from weight and height.
+    colonne_da_analizzare = [
+        "peso_kg",
+        "altezza_cm",
+        "velocita_media",
+        "Deriva_cardiaca_percentuale",
+        "numero_corse",
+    ]
 
     df_ml = df_preanalisi.select(colonne_da_analizzare).na.drop()
 
