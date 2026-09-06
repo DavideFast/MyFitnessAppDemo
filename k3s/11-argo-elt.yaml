@@ -356,6 +356,7 @@ spec:
           import urllib.request
 
           output_path = "/tmp/argo-out/schedule-next-window"
+          os.makedirs(os.path.dirname(output_path), exist_ok=True)
           host = os.environ["KUBERNETES_SERVICE_HOST"]
           port = os.getenv("KUBERNETES_SERVICE_PORT", "443")
           namespace = os.getenv("KUBERNETES_NAMESPACE", "bigintensive")
