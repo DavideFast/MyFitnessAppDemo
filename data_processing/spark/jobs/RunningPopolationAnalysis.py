@@ -63,6 +63,9 @@ def main():
         .option("user", POSTGRES_PROPS["user"])
         .option("password", POSTGRES_PROPS["password"])
         .option("driver", POSTGRES_PROPS["driver"])
+        .option("lowerBound", atleta_min)
+        .option("upperBound", atleta_max)
+        .option("numPartitions", num_partizioni)
         .load()
     )
 
