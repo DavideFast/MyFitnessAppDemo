@@ -53,6 +53,21 @@ export default function ManageSmartwatchConnections() {
       });
   };
 
+  const fermaELTDopoFinestra = () => {
+    fetch(`${apiBaseUrl}/api/v1/stopELTAfterWindow`, { method: "POST" })
+      .then((response) => response.json())
+      .then((data) => {
+        if (!data.success) {
+          throw new Error(`Errore nella richiesta: ${data.error || data.message}`);
+        }
+        alert(data.message);
+      })
+      .catch((err) => {
+        console.error("Errore nella richiesta di arresto ELT:", err);
+        alert(`Errore nell'arresto ELT: ${err.message}`);
+      });
+  };
+
   return (
     <section aria-label="Dati workouts">
       <h1>Gestione connessioni Smartwatch </h1>
@@ -63,6 +78,7 @@ export default function ManageSmartwatchConnections() {
       <br />
       <h1>Gestione processo ELT (Argo)</h1>
       <button onClick={avviaELTArgo}>Avvia processo ELT (Argo)</button>
+      <button onClick={fermaELTDopoFinestra}>Ferma ELT dopo finestra corrente</button>
 
       <br />
       <br />

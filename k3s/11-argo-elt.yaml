@@ -4,6 +4,14 @@ metadata:
   name: elt-argo-runner
   namespace: bigintensive
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elt-control
+  namespace: bigintensive
+data:
+  stop-after-window: "false"
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -13,6 +21,10 @@ rules:
   - apiGroups: ["argoproj.io"]
     resources: ["workflows", "workflowtaskresults"]
     verbs: ["get", "list", "watch", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["elt-control"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -92,9 +104,12 @@ spec:
         - - name: pause-before-next-window
             template: pause-before-next-window
             when: "{{steps.plan.outputs.parameters.has-more}} == true"
+        - - name: check-next-window
+            template: check-next-window
+            when: "{{steps.plan.outputs.parameters.has-more}} == true"
         - - name: schedule-next-window
             template: schedule-next-window
-            when: "{{steps.plan.outputs.parameters.has-more}} == true"
+            when: "{{steps.plan.outputs.parameters.has-more}} == true && {{steps.check-next-window.outputs.parameters.schedule-next-window}} == true"
             arguments:
               parameters:
                 - name: requested-replicas
@@ -210,9 +225,10 @@ spec:
               )
 
             max_final = int(max_final_row) if max_final_row is not None else 0
-            max_raw = int(max_raw_row) if max_raw_row is not None else 0
 
-            start_id = max(max_final, max_raw) + 1
+            # Only finalized data advances the workflow window. RAW may contain
+            # disjoint successful worker ranges after a failed fan-out.
+            start_id = max_final + 1
             # One workflow handles one bounded window, shared by all workers.
             end_id = min(postgres_max_id, start_id + 1_000_000 - 1)
             total_workouts = max(0, (end_id - start_id) + 1)
@@ -327,6 +343,44 @@ spec:
     - name: pause-before-next-window
       suspend:
         duration: 30s
+
+    - name: check-next-window
+      script:
+        image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
+        imagePullPolicy: Always
+        command: [python, -u]
+        source: |
+          import json
+          import os
+          import ssl
+          import urllib.request
+
+          output_path = "/tmp/argo-out/schedule-next-window"
+          host = os.environ["KUBERNETES_SERVICE_HOST"]
+          port = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+          namespace = os.getenv("KUBERNETES_NAMESPACE", "bigintensive")
+          token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+          ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+          with open(token_path, encoding="utf-8") as file:
+            token = file.read().strip()
+          request = urllib.request.Request(
+            f"https://{host}:{port}/api/v1/namespaces/{namespace}/configmaps/elt-control",
+            headers={"Authorization": f"Bearer {token}"},
+          )
+          context = ssl.create_default_context(cafile=ca_path)
+          with urllib.request.urlopen(request, context=context, timeout=10) as response:
+            control = json.loads(response.read().decode("utf-8"))
+
+          stop_requested = control.get("data", {}).get("stop-after-window", "false").lower() == "true"
+          with open(output_path, "w", encoding="utf-8") as file:
+            file.write(str(not stop_requested).lower())
+          print(f"[elt-control] stop-after-window={stop_requested}", flush=True)
+      outputs:
+        parameters:
+          - name: schedule-next-window
+            valueFrom:
+              path: /tmp/argo-out/schedule-next-window
 
     - name: schedule-next-window
       inputs:

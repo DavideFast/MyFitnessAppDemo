@@ -60,6 +60,7 @@ The backend exposes the following endpoints. Application endpoints use the `/api
 | POST | `/api/v1/startSmartWatchPodSimulator` | None | Scales the `smartwatch-simulator` Kubernetes Deployment to one replica. |
 | POST | `/api/v1/stopSmartWatchPodSimulator` | None | Scales the `smartwatch-simulator` Kubernetes Deployment to zero replicas. |
 | POST | `/api/v1/startELTArgoProcess` | Optional JSON body: `{ "replicas": <positive integer> }` | Starts an Argo ELT workflow from the configured workflow template. When an ELT workflow is already active, it returns that workflow instead of creating another. |
+| POST | `/api/v1/stopELTAfterWindow` | None | Requests a cooperative stop: the active ELT workflow completes its current window and finalize step, then does not schedule another window. Starting ELT again clears this request. |
 | POST | `/api/v1/startRunningPopulation` | None | Creates the Spark Operator `SparkApplication` for the RunningPopulation analysis. Existing completed applications are removed; an active application is returned instead of creating a duplicate. |
 
 Successful read endpoints return `{ "success": true, "count": ..., "data": [...] }`. Control endpoints return `{ "success": true, "message": ... }` plus a workflow or application name when applicable. Errors return `{ "success": false, "error": ... }`; ClickHouse unavailability returns HTTP `503`, while the remaining handled failures return HTTP `500`.

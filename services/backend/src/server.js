@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import { createSystemRouter } from "./routes/systemRoutes.js";
 import { createServerContext } from "./bootstrap/serverContext.js";
 import { Kafka } from "kafkajs";
-import { AppsV1Api, CustomObjectsApi, KubeConfig } from "@kubernetes/client-node";
+import { AppsV1Api, CoreV1Api, CustomObjectsApi, KubeConfig } from "@kubernetes/client-node";
 
 // ============================ CONFIGURAZIONE ===============================
 
@@ -13,9 +13,11 @@ import { AppsV1Api, CustomObjectsApi, KubeConfig } from "@kubernetes/client-node
 const kubeConfig = new KubeConfig();
 kubeConfig.loadFromDefault();
 const k8sApi = kubeConfig.makeApiClient(AppsV1Api);
+const k8sCoreApi = kubeConfig.makeApiClient(CoreV1Api);
 const k8sCustomObjectsApi = kubeConfig.makeApiClient(CustomObjectsApi);
 const kubernetesNamespace = process.env.KUBERNETES_NAMESPACE || "bigintensive";
 const eltCronJobName = "elt-copy-workout";
+const eltControlConfigMapName = "elt-control";
 const argoGroup = "argoproj.io";
 const argoVersion = "v1alpha1";
 const argoWorkflowsPlural = "workflows";
@@ -77,6 +79,18 @@ function toInteger(value, fallback = 0) {
     return fallback;
   }
   return Math.trunc(parsed);
+}
+
+async function setEtlStopAfterWindow(stopAfterWindow) {
+  await k8sCoreApi.patchNamespacedConfigMap({
+    name: eltControlConfigMapName,
+    namespace: kubernetesNamespace,
+    body: {
+      data: {
+        "stop-after-window": String(stopAfterWindow),
+      },
+    },
+  });
 }
 
 async function submitEtlArgoWorkflow({ requestedReplicas, requestId } = {}) {
@@ -313,6 +327,7 @@ app.post("/api/v1/startELTArgoProcess", async (req, res) => {
   const requestId = createRequestId();
   try {
     console.log(`[ELT-ARGO][${requestId}] request received: replicas=${req.body?.replicas ?? "auto"}`);
+    await setEtlStopAfterWindow(false);
     const activeWorkflow = await getActiveArgoEtlWorkflow({ requestId });
     if (activeWorkflow) {
       console.log(`[ELT-ARGO][${requestId}] already running: ${activeWorkflow.metadata?.name}`);
@@ -344,6 +359,20 @@ app.post("/api/v1/startELTArgoProcess", async (req, res) => {
       error: errorWithHint,
       debug: details,
     });
+  }
+});
+
+app.post("/api/v1/stopELTAfterWindow", async (req, res) => {
+  try {
+    await setEtlStopAfterWindow(true);
+    res.status(200).json({
+      success: true,
+      message: "Arresto ELT richiesto: il workflow conclude la finestra corrente e non avvia la successiva.",
+    });
+  } catch (error) {
+    const message = getKubernetesErrorMessage(error);
+    console.error("Errore richiedendo l'arresto ELT:", message);
+    res.status(500).json({ success: false, error: message });
   }
 });
 
