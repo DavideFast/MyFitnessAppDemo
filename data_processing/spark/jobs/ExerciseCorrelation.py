@@ -1,11 +1,9 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, avg,  lag, countDistinct, first, row_number, to_date, radians, sin, cos, sqrt, atan2
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
+from pyspark.sql.functions import col, row_number
 from pyspark.sql.window import Window
-from pyspark.ml.feature import VectorAssembler
-from pyspark.ml.stat import Correlation
 import pyspark.sql.functions as F
-from config import CLICKHOUSE_URL, CLICKHOUSE_PROPS, CLICKHOUSE_TABLE, POSTGRES_URL, POSTGRES_PROPS, POSTGRES_TABLE
+from itertools import combinations
+from config import CLICKHOUSE_URL, CLICKHOUSE_PROPS
 
 
 def main():
@@ -22,9 +20,8 @@ def main():
         .getOrCreate()
     )
 
-    # Register both JDBC drivers explicitly in the driver JVM.
+    # Register the JDBC driver explicitly in the driver JVM.
     spark._jvm.java.lang.Class.forName("com.clickhouse.jdbc.ClickHouseDriver")
-    spark._jvm.java.lang.Class.forName("org.postgresql.Driver")
 
     # set log level to WARN to reduce verbosity
     spark.sparkContext.setLogLevel("WARN")
@@ -33,7 +30,7 @@ def main():
         (SELECT
             coalesce(min(athlete_id), 0) AS min_athlete_id,
             coalesce(max(athlete_id), 0) AS max_athlete_id
-        FROM {CLICKHOUSE_TABLE}) AS athlete_bounds
+        FROM allenamenti) AS athlete_bounds
     """
 
     bounds = (
@@ -51,33 +48,33 @@ def main():
     atleta_min = bounds["min_athlete_id"]
     atleta_max = bounds["max_athlete_id"]
 
-    df = (
+    if atleta_min == 0 and atleta_max == 0:
+        print("Nessun allenamento disponibile per l'analisi.")
+        spark.stop()
+        return
+
+    reader = (
         spark.read.format("jdbc")
         .option("url", CLICKHOUSE_URL)
         .option("dbtable", "allenamenti")
         .option("user", CLICKHOUSE_PROPS["user"])
         .option("password", CLICKHOUSE_PROPS["password"])
         .option("driver", CLICKHOUSE_PROPS["driver"])
-        .option("partitionColumn", "athlete_id")
-        .option("lowerBound", atleta_min)
-        .option("upperBound", atleta_max)
-        .option("numPartitions", num_partizioni)
-        .load()
     )
 
-    df_postgres = (
-        spark.read.format("jdbc")
-        .option("url", POSTGRES_URL)
-        .option("dbtable", POSTGRES_TABLE)
-        .option("user", POSTGRES_PROPS["user"])
-        .option("password", POSTGRES_PROPS["password"])
-        .option("driver", POSTGRES_PROPS["driver"])
-        .option("partitionColumn", "athlete_id")
-        .option("lowerBound", atleta_min)
-        .option("upperBound", atleta_max)
-        .option("numPartitions", num_partizioni)
-        .load()
-    )
+    if atleta_min == atleta_max:
+        df = reader.load()
+    else:
+        df = (
+            reader
+            .option("partitionColumn", "athlete_id")
+            .option("lowerBound", atleta_min)
+            .option("upperBound", atleta_max)
+            .option("numPartitions", num_partizioni)
+            .load()
+        )
+
+    df.show(5)
 
     #################################################################################
     ##                                                                             ##
@@ -85,32 +82,60 @@ def main():
     ##                                                                             ##
     #################################################################################
 
-    df.show(5)
-    df_postgres.show(5)
-
-
-    df_ordinato = df.orderBy(col("athlete_id"), col("nome_esercizio"))
-    df_ordinato = df_ordinato.filter(col("peso").isNotNull())
+    
+    df_ordinato = df.filter(col("peso_allenamento").isNotNull())
     df_ordinato.show(5)
 
     window_spec = Window.partitionBy("athlete_id", "allenamento_id", "nome_esercizio") \
-        .orderBy(F.col("peso").desc(),F.col("ripetizioni").desc())
+        .orderBy(F.col("peso_allenamento").desc(),F.col("ripetizioni_allenamento").desc())
 
 
-    df_ordinato = df_ordinato.withColumn("rank", F.rank().over(window_spec)) \
-        .filter(col("rank") == 1) \
-        .drop("rank")
+    df_ordinato = df_ordinato.withColumn("row_number", row_number().over(window_spec)) \
+        .filter(col("row_number") == 1) \
+        .drop("row_number")
 
     df_ordinato.show(5)
 
     
     
 
-    df_organizzato = df_ordinato.withColumn("massimale_teorico", F.col("peso") * (1 + F.col("ripetizioni_allenamento") / 30))
+    df_organizzato = df_ordinato.withColumn("massimale_teorico", F.col("peso_allenamento") * (1 + F.col("ripetizioni_allenamento") / 30))
 
     df_organizzato.show(5)
 
     df_organizzato = df_organizzato.drop("ripetizioni_allenamento","serie_allenamento","recupero_allenamento")
+
+    df_organizzato.show(5)
+
+    SOGLIA_COPERTURA = 0.80
+    MIN_ATLETI_PER_ESERCIZIO = 30
+    MIN_SESSIONI_PER_ATLETA_ESERCIZIO = 3
+
+    atleti_validi = (
+        df_organizzato
+        .groupBy("athlete_id", "nome_esercizio")
+        .agg(F.countDistinct("allenamento_id").alias("numero_sessioni"))
+        .filter(F.col("numero_sessioni") >= MIN_SESSIONI_PER_ATLETA_ESERCIZIO)
+    )
+
+    numero_atleti = atleti_validi.select("athlete_id").distinct().count()
+
+    esercizi_ammessi = (
+        atleti_validi
+        .groupBy("nome_esercizio")
+        .agg(F.countDistinct("athlete_id").alias("numero_atleti"))
+        .filter(
+            (F.col("numero_atleti") >= MIN_ATLETI_PER_ESERCIZIO)
+            & (F.col("numero_atleti") >= numero_atleti * SOGLIA_COPERTURA)
+        )
+        .select("nome_esercizio")
+    )
+
+    df_organizzato = df_organizzato.join(
+        esercizi_ammessi,
+        on="nome_esercizio",
+        how="inner",
+    )
 
     df_organizzato.show(5)
 
@@ -126,56 +151,80 @@ def main():
 
     df_joined_12 = df_a.join(df_b,
                            (col("a.athlete_id") == col("b.athlete_id"))
-                           & (col("a.allenamento_id") == col("b.allenamento_id")) 
+                           & (col("b.data_allenamento") <= col("a.data_allenamento")) 
                            & (col("a.nome_esercizio") == col("b.nome_esercizio"))
-                           & (col("b.data_allenamento") >= F.expr("add_months(a.data_allenamento, -12)")),
+                           & (col("b.data_allenamento") >= F.add_months(col("a.data_allenamento"), -12)),
                            "inner")
 
     df_varianze_mobili = df_joined_12.groupBy("a.athlete_id", "a.allenamento_id", "a.nome_esercizio","a.data_allenamento","a.massimale_teorico") \
         .agg(F.variance("b.massimale_teorico").alias("varianza_12_mesi"),
-             F.variance(F.when(col("b.data_allenamento") >= F.expr("add_months(a.data_allenamento, -6)"),
+             F.variance(F.when(col("b.data_allenamento") >= F.add_months(col("a.data_allenamento"), -6),
                                col("b.massimale_teorico"))).alias("varianza_6_mesi"),
-             F.variance(F.when(col("b.data_allenamento") >= F.expr("add_months(a.data_allenamento, -3)"),
+             F.variance(F.when(col("b.data_allenamento") >= F.add_months(col("a.data_allenamento"), -3),
                                col("b.massimale_teorico"))).alias("varianza_3_mesi"),
-             F.variance(F.when(col("b.data_allenamento") >= F.expr("add_months(a.data_allenamento, -1)"),
+             F.variance(F.when(col("b.data_allenamento") >= F.add_months(col("a.data_allenamento"), -1),
                                col("b.massimale_teorico"))).alias("varianza_1_mese"))
     
 
     df_varianze_mobili.show(5)
 
     df_preprocessing = df_varianze_mobili.select(
-        "a.athlete_id",
-        "a.allenamento_id",
-        "a.nome_esercizio",
-        "a.data_allenamento",
-        "a.massimale_teorico",
+        "athlete_id",
+        "allenamento_id",
+        "nome_esercizio",
+        "data_allenamento",
+        "massimale_teorico",
         F.expr("stack(4, 'varianza_12_mesi', varianza_12_mesi, 'varianza_6_mesi', varianza_6_mesi, 'varianza_3_mesi', varianza_3_mesi, 'varianza_1_mese', varianza_1_mese) as (periodo, valore)")
     )
     df_preprocessing = df_preprocessing.withColumn("features_name", F.concat_ws("_", F.col("nome_esercizio"), F.col("periodo")))
 
     df_preprocessing = df_preprocessing.groupBy(
-        "a.athlete_id",
-        "a.data_allenamento",
+        "athlete_id",
+        "data_allenamento",
     ).pivot("features_name") \
      .agg(F.first("valore"))
     
     df_preprocessing.show(5)
 
-    df_pulita = df_preprocessing.dropna()
-    df_pulita.show(5)
-
-    feature_columns = [col for col in df_pulita.columns if col not in ["a.athlete_id", "a.data_allenamento"]]
-
-    assembler = VectorAssembler(inputCols=feature_columns, outputCol="features",handleInvalid="skip")
-    df_features = assembler.transform(df_pulita).select("features")
-    df_features.show(5)
-
-    matrix_row = Correlation.corr(df_features, "features",method="pearson").head()
-    correlation_matrix = matrix_row[0]
-    print("Correlation Matrix:")
-    print(correlation_matrix)
 
 
+    feature_columns = [col for col in df_preprocessing.columns if col not in ["athlete_id", "data_allenamento"]]
+
+    MIN_OSSERVAZIONI_COPPIA = 30
+
+    if len(feature_columns) < 2:
+        print("Not enough features to compute correlation.")
+        spark.stop()
+        return
+
+    pair_definitions = list(combinations(feature_columns, 2))
+    aggregate_expressions = []
+
+    for pair_index, (left_feature, right_feature) in enumerate(pair_definitions):
+        valid_pair = (
+            F.col(left_feature).isNotNull() & F.col(right_feature).isNotNull()
+        )
+
+        aggregate_expressions.extend([
+            F.sum(F.when(valid_pair, 1).otherwise(0)).alias(f"pair_{pair_index}_count"),
+            F.corr(F.when(valid_pair, F.col(left_feature)), F.when(valid_pair, F.col(right_feature))).alias(f"pair_{pair_index}_corr")
+        ])
+
+    pair_results = df_preprocessing.agg(*aggregate_expressions).first()
+
+    print("Correlazioni Pearson per coppie di esercizi:")
+    for pair_index, (left_feature, right_feature) in enumerate(pair_definitions):
+        observations = pair_results[f"pair_{pair_index}_count"]
+        correlation = pair_results[f"pair_{pair_index}_corr"]
+        if observations is None or observations < MIN_OSSERVAZIONI_COPPIA:
+            print(f"{left_feature} - {right_feature}: Not enough observations (only {observations or 0})")
+            continue
+        if correlation is None:
+            print(f"{left_feature} - {right_feature}: Correlation could not be computed")
+            continue
+        print(f"{left_feature} - {right_feature}: Correlazione = {correlation}, Osservazioni = {observations}")
+
+        
     spark.stop()
 
 if __name__ == "__main__":
