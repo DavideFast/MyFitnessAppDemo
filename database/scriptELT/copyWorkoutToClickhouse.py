@@ -57,6 +57,16 @@ POSTGRES_BATCH_SIZE = 10_000
 # Numero di righe inviate per volta a ClickHouse
 CLICKHOUSE_BATCH_SIZE = 50_000
 
+# Batch minimo dopo eventuali suddivisioni per errori memoria su ClickHouse
+CLICKHOUSE_MIN_BATCH_SIZE = int(
+    os.getenv("CLICKHOUSE_MIN_BATCH_SIZE", "500")
+)
+
+# Limite di sicurezza per evitare ricorsione infinita nei retry
+CLICKHOUSE_MAX_SPLIT_ATTEMPTS = int(
+    os.getenv("CLICKHOUSE_MAX_SPLIT_ATTEMPTS", "8")
+)
+
 # Modalita' operative:
 # - ingest: solo caricamento PostgreSQL -> RAW (nessuna trasformazione)
 # - finalize: solo consolidamento RAW -> finale
@@ -286,24 +296,64 @@ def to_datetime(value):
 
 def insert_clickhouse_batch(
     ch,
-    rows
+    rows,
+    split_depth=0
 ):
 
     if not rows:
         return
 
-    ch.insert(
-        f"{CLICKHOUSE_DATABASE}.allenamenti_raw",
-        rows,
+    try:
+        ch.insert(
+            f"{CLICKHOUSE_DATABASE}.allenamenti_raw",
+            rows,
 
-        column_names=[
-            "allenamento_id",
-            "athlete_id",
-            "data_allenamento",
-            "struttura_allenamento",
-            "created_at"
-        ]
-    )
+            column_names=[
+                "allenamento_id",
+                "athlete_id",
+                "data_allenamento",
+                "struttura_allenamento",
+                "created_at"
+            ]
+        )
+    except Exception as exc:
+        error_text = str(exc).upper()
+        is_memory_error = (
+            "MEMORY_LIMIT_EXCEEDED" in error_text or
+            "CODE: 241" in error_text or
+            "MEMORY LIMIT" in error_text
+        )
+
+        cannot_split_more = (
+            len(rows) <= CLICKHOUSE_MIN_BATCH_SIZE or
+            split_depth >= CLICKHOUSE_MAX_SPLIT_ATTEMPTS
+        )
+
+        if (not is_memory_error) or cannot_split_more:
+            raise
+
+        midpoint = len(rows) // 2
+
+        if midpoint == 0:
+            raise
+
+        print(
+            "Memoria ClickHouse insufficiente per "
+            f"{len(rows):,} righe: nuovo tentativo con 2 sottobatch "
+            f"da circa {midpoint:,} righe."
+        )
+
+        insert_clickhouse_batch(
+            ch,
+            rows[:midpoint],
+            split_depth + 1
+        )
+
+        insert_clickhouse_batch(
+            ch,
+            rows[midpoint:],
+            split_depth + 1
+        )
 
 
 # ============================================================
