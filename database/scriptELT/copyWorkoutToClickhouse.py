@@ -57,6 +57,12 @@ POSTGRES_BATCH_SIZE = 10_000
 # Numero di righe inviate per volta a ClickHouse
 CLICKHOUSE_BATCH_SIZE = 50_000
 
+# Numero massimo di allenamenti elaborati consecutivamente da ogni pod ELT.
+ELT_CYCLE_WORKOUTS = int(os.getenv("ELT_CYCLE_WORKOUTS", "1000000"))
+
+# Pausa dopo un ciclo completo, per ridurre il carico sul cluster.
+ELT_CYCLE_PAUSE_SECONDS = int(os.getenv("ELT_CYCLE_PAUSE_SECONDS", "30"))
+
 # Batch minimo dopo eventuali suddivisioni per errori memoria su ClickHouse
 CLICKHOUSE_MIN_BATCH_SIZE = int(
     os.getenv("CLICKHOUSE_MIN_BATCH_SIZE", "500")
@@ -443,168 +449,112 @@ def sync_allenamenti(
     total_workouts = 0
     total_rows = 0
 
-    # --------------------------------------------------------
-    # Cursor PostgreSQL
-    # --------------------------------------------------------
-
     with pg.cursor() as cur:
-
         while True:
+            cycle_workouts = 0
+            source_exhausted = False
+            print(
+                f"Avvio ciclo ELT: massimo {ELT_CYCLE_WORKOUTS:,} allenamenti."
+            )
 
-            # ------------------------------------------------
-            # Leggiamo solamente i nuovi record
-            # ------------------------------------------------
-
-            if worker_range is not None:
-                cur.execute(
-                    """
-                    SELECT
-                        id,
-                        athlete_id,
-                        data_allenamento,
-                        struttura_allenamento,
-                        created_at
-                    FROM allenamenti
-                    WHERE id > %s
-                      AND id <= %s
-                    ORDER BY id
-                    LIMIT %s
-                    """,
-                    (
-                        last_id,
-                        worker_end,
-                        POSTGRES_BATCH_SIZE
-                    )
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT
-                        id,
-                        athlete_id,
-                        data_allenamento,
-                        struttura_allenamento,
-                        created_at
-                    FROM allenamenti
-                    WHERE id > %s
-                    ORDER BY id
-                    LIMIT %s
-                    """,
-                    (
-                        last_id,
-                        POSTGRES_BATCH_SIZE
-                    )
+            while cycle_workouts < ELT_CYCLE_WORKOUTS:
+                batch_limit = min(
+                    POSTGRES_BATCH_SIZE,
+                    ELT_CYCLE_WORKOUTS - cycle_workouts,
                 )
 
-            workouts = cur.fetchall()
-
-            # ------------------------------------------------
-            # Non ci sono nuovi dati
-            # ------------------------------------------------
-
-            if not workouts:
-
-                print()
-                print(
-                    "Nessun nuovo allenamento da trasferire."
-                )
-
-                break
-
-            rows = []
-
-            # ------------------------------------------------
-            # Preparazione batch
-            # ------------------------------------------------
-
-            for (
-                workout_id,
-                athlete_id,
-                workout_date,
-                workout_structure,
-                created_at
-            ) in workouts:
-
-                json_string = json_to_string(
-                    workout_structure
-                )
-
-                rows.append(
-                    (
-                        int(workout_id),
-
-                        int(athlete_id),
-
-                        to_datetime(workout_date),
-
-                        json_string,
-
-                        to_datetime(created_at)
+                if worker_range is not None:
+                    cur.execute(
+                        """
+                        SELECT
+                            id,
+                            athlete_id,
+                            data_allenamento,
+                            struttura_allenamento,
+                            created_at
+                        FROM allenamenti
+                        WHERE id > %s
+                          AND id <= %s
+                        ORDER BY id
+                        LIMIT %s
+                        """,
+                        (last_id, worker_end, batch_limit)
                     )
-                )
-
-                # ------------------------------------------------
-                # Se raggiungiamo il limite del batch ClickHouse
-                # ------------------------------------------------
-
-                if len(rows) >= CLICKHOUSE_BATCH_SIZE:
-
-                    print(
-                        f"Inserimento di "
-                        f"{len(rows):,} "
-                        f"allenamenti in ClickHouse..."
+                else:
+                    cur.execute(
+                        """
+                        SELECT
+                            id,
+                            athlete_id,
+                            data_allenamento,
+                            struttura_allenamento,
+                            created_at
+                        FROM allenamenti
+                        WHERE id > %s
+                        ORDER BY id
+                        LIMIT %s
+                        """,
+                        (last_id, batch_limit)
                     )
 
-                    insert_clickhouse_batch(
-                        ch,
-                        rows
+                workouts = cur.fetchall()
+
+                if not workouts:
+                    source_exhausted = True
+                    break
+
+                rows = []
+                for (
+                    workout_id,
+                    athlete_id,
+                    workout_date,
+                    workout_structure,
+                    created_at,
+                ) in workouts:
+                    rows.append(
+                        (
+                            int(workout_id),
+                            int(athlete_id),
+                            to_datetime(workout_date),
+                            json_to_string(workout_structure),
+                            to_datetime(created_at),
+                        )
                     )
 
+                    if len(rows) >= CLICKHOUSE_BATCH_SIZE:
+                        insert_clickhouse_batch(ch, rows)
+                        total_rows += len(rows)
+                        rows.clear()
+
+                if rows:
+                    insert_clickhouse_batch(ch, rows)
                     total_rows += len(rows)
 
-                    rows.clear()
+                # Advance only after all rows from this PostgreSQL batch are flushed.
+                last_id = workouts[-1][0]
+                total_workouts += len(workouts)
+                cycle_workouts += len(workouts)
+                print(f"Ultimo ID trasferito: {last_id:,}")
+                print(f"Allenamenti trasferiti in questa esecuzione: {total_workouts:,}")
 
-            # ------------------------------------------------
-            # Inseriamo il restante batch
-            # ------------------------------------------------
+                if worker_range is not None and last_id >= worker_end:
+                    source_exhausted = True
+                    break
 
-            if rows:
+                if len(workouts) < batch_limit:
+                    source_exhausted = True
+                    break
 
-                print(
-                    f"Inserimento di "
-                    f"{len(rows):,} "
-                    f"allenamenti in ClickHouse..."
-                )
-
-                insert_clickhouse_batch(
-                    ch,
-                    rows
-                )
-
-                total_rows += len(rows)
-
-                rows.clear()
-
-            # ------------------------------------------------
-            # Aggiorniamo il checkpoint logico
-            #
-            # L'ultimo ID viene aggiornato SOLO dopo che
-            # l'intero batch è stato inserito con successo.
-            # ------------------------------------------------
-
-            last_id = workouts[-1][0]
-
-            total_workouts += len(workouts)
+            if source_exhausted:
+                if cycle_workouts == 0:
+                    print("Nessun nuovo allenamento da trasferire.")
+                break
 
             print(
-                f"Ultimo ID trasferito: "
-                f"{last_id:,}"
+                f"Ciclo completato: {cycle_workouts:,} allenamenti flushati. "
+                f"Pausa di {ELT_CYCLE_PAUSE_SECONDS} secondi prima del prossimo ciclo."
             )
-
-            print(
-                f"Allenamenti trasferiti in questa esecuzione: "
-                f"{total_workouts:,}"
-            )
+            time.sleep(ELT_CYCLE_PAUSE_SECONDS)
 
     # ========================================================
     # RISULTATO

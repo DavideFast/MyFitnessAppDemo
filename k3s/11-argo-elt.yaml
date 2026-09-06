@@ -302,6 +302,10 @@ spec:
             value: "{{inputs.parameters.replicas}}"
           - name: ELT_WORKER_INDEX
             value: "{{inputs.parameters.worker-index}}"
+          - name: ELT_CYCLE_WORKOUTS
+            value: "1000000"
+          - name: ELT_CYCLE_PAUSE_SECONDS
+            value: "30"
 
     - name: finalize
       inputs:
