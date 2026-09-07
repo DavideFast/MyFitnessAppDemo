@@ -90,7 +90,13 @@ ARRAY JOIN
                 'esercizi'
             )
         )
-    ) AS serie;
+    ) AS serie
+
+WHERE r.allenamento_id NOT IN
+(
+    SELECT DISTINCT allenamento_id
+    FROM bigintensive.allenamenti
+);
 
 
 -- ============================================================
@@ -106,7 +112,7 @@ FROM bigintensive.allenamenti;
 -- SVUOTAMENTO STAGING
 -- ============================================================
 
-TRUNCATE TABLE bigintensive.allenamenti_raw;
+TRUNCATE TABLE bigintensive.allenamenti_raw_local ON CLUSTER bigintensive_cluster;
 
 
 -- ============================================================
