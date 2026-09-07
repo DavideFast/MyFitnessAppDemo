@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 
 import { createSystemRouter } from "./routes/systemRoutes.js";
 import { createServerContext } from "./bootstrap/serverContext.js";
+import { createClickhouseClient } from "./db/pool.js";
 import { Kafka } from "kafkajs";
 import { AppsV1Api, CoreV1Api, CustomObjectsApi, KubeConfig } from "@kubernetes/client-node";
 
@@ -148,11 +149,7 @@ async function setEtlStopAfterWindow(stopAfterWindow) {
   await k8sCoreApi.patchNamespacedConfigMap({
     name: eltControlConfigMapName,
     namespace: kubernetesNamespace,
-    body: {
-      data: {
-        "stop-after-window": String(stopAfterWindow),
-      },
-    },
+    body: [{ op: "add", path: "/data/stop-after-window", value: String(stopAfterWindow) }],
   });
 }
 

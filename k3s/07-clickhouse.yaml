@@ -419,7 +419,7 @@ spec:
             - { name: dynamic-config, mountPath: /etc/clickhouse-server/config.d/zz-macros.xml, subPath: macros.xml }
           resources:
             requests: { memory: "1Gi", cpu: "500m" }
-            limits: { memory: "2Gi", cpu: "1000m" }
+            limits: { memory: "3Gi", cpu: "1000m" }
           livenessProbe:
             httpGet: { path: /ping, port: 8123 }
             initialDelaySeconds: 30
@@ -535,7 +535,7 @@ spec:
             - { name: dynamic-config, mountPath: /etc/clickhouse-server/config.d/zz-macros.xml, subPath: macros.xml }
           resources:
             requests: { memory: "1Gi", cpu: "500m" }
-            limits: { memory: "2Gi", cpu: "1000m" }
+            limits: { memory: "3Gi", cpu: "1000m" }
           livenessProbe:
             httpGet: { path: /ping, port: 8123 }
             initialDelaySeconds: 30

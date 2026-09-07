@@ -119,6 +119,22 @@ spec:
       inputs:
         parameters:
           - name: requested-replicas
+      metadata:
+        labels:
+          app: elt-copy-workout
+          elt-template: compute-plan
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - elt-copy-workout
+                topologyKey: kubernetes.io/hostname
       script:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
@@ -314,6 +330,22 @@ spec:
           - name: end-id
           - name: replicas
           - name: worker-index
+      metadata:
+        labels:
+          app: elt-copy-workout
+          elt-template: ingest-worker
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - elt-copy-workout
+                topologyKey: kubernetes.io/hostname
       container:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
@@ -345,6 +377,22 @@ spec:
         duration: 30s
 
     - name: check-next-window
+      metadata:
+        labels:
+          app: elt-copy-workout
+          elt-template: check-next-window
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - elt-copy-workout
+                topologyKey: kubernetes.io/hostname
       script:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
@@ -410,6 +458,22 @@ spec:
       inputs:
         parameters:
           - name: raw-rows-pending
+      metadata:
+        labels:
+          app: elt-copy-workout
+          elt-template: finalize
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - elt-copy-workout
+                topologyKey: kubernetes.io/hostname
       container:
         image: davidefast/elt-mirror-postgresql-to-clickhouse:latest
         imagePullPolicy: Always
