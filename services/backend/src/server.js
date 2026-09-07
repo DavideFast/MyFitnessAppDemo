@@ -23,9 +23,72 @@ const argoVersion = "v1alpha1";
 const argoWorkflowsPlural = "workflows";
 const eltArgoWorkflowTemplateName = process.env.ELT_ARGO_WORKFLOW_TEMPLATE || "elt-pipeline-template";
 const runningPopulationJobName = "running-population-analysis";
+const exerciseCorrelationJobName = "exercise-correlation-analysis";
 const sparkApplicationGroup = "sparkoperator.k8s.io";
 const sparkApplicationVersion = "v1beta2";
 const sparkApplicationPlural = "sparkapplications";
+const sparkJobsImage = process.env.SPARK_JOBS_IMAGE || "davidefast/bigintensive-sparkwithdependencies:latest";
+const sparkFinishedStates = ["COMPLETED", "FAILED", "FAILED_SUBMISSION", "SUBMISSION_FAILED", "UNKNOWN"];
+const sparkActiveStates = ["NEW", "SUBMITTED", "RUNNING", "PENDING_RERUN", "RESTARTING", "FAILING"];
+const sparkJdbcExtraClassPath = "/opt/spark/jars/clickhouse-jdbc-0.6.3-all.jar:/opt/spark/jars/postgresql-42.7.2.jar";
+const sparkApplicationConf = {
+  "spark.dynamicAllocation.enabled": "true",
+  "spark.dynamicAllocation.shuffleTracking.enabled": "true",
+  "spark.dynamicAllocation.initialExecutors": "1",
+  "spark.dynamicAllocation.minExecutors": "1",
+  "spark.dynamicAllocation.maxExecutors": "4",
+  "spark.dynamicAllocation.executorIdleTimeout": "60s",
+  "spark.dynamicAllocation.cachedExecutorIdleTimeout": "120s",
+  "spark.executor.cores": "2",
+  "spark.executor.memory": "2g",
+  "spark.sql.shuffle.partitions": "10",
+  "spark.driver.extraClassPath": sparkJdbcExtraClassPath,
+  "spark.executor.extraClassPath": sparkJdbcExtraClassPath,
+};
+const sparkPodEnvFrom = [{ configMapRef: { name: "bigintensive-config" } }, { secretRef: { name: "bigintensive-secrets" } }];
+const sparkDriverSpec = {
+  cores: 2,
+  coreLimit: "2000m",
+  memory: "2g",
+  serviceAccount: "spark",
+  envFrom: sparkPodEnvFrom,
+};
+const sparkExecutorSpec = {
+  cores: 2,
+  memory: "2g",
+  envFrom: sparkPodEnvFrom,
+};
+
+const sparkJobDefinitions = {
+  runningPopulation: {
+    key: "runningPopulation",
+    jobName: runningPopulationJobName,
+    displayName: "RunningPopulation",
+    mainApplicationFile: process.env.RUNNING_POPULATION_MAIN_FILE || "local:///opt/jobs/RunningPopolationAnalysis.py",
+  },
+  exerciseCorrelation: {
+    key: "exerciseCorrelation",
+    jobName: exerciseCorrelationJobName,
+    displayName: "ExerciseCorrelation",
+    mainApplicationFile: process.env.EXERCISE_CORRELATION_MAIN_FILE || "local:///opt/jobs/ExerciseCorrelationAnalysis.py",
+  },
+};
+
+function getSparkJobDefinition(job) {
+  const normalizedJob = String(job || "")
+    .trim()
+    .toLowerCase();
+  const aliases = {
+    runningpopulation: "runningPopulation",
+    "running-population": "runningPopulation",
+    running_population: "runningPopulation",
+    exercisecorrelation: "exerciseCorrelation",
+    "exercise-correlation": "exerciseCorrelation",
+    exercise_correlation: "exerciseCorrelation",
+  };
+
+  return sparkJobDefinitions[aliases[normalizedJob]] || null;
+}
 
 // Configurazione del produttore Kafka
 const kafkaBrokers = String(process.env.KAFKA_BOOTSTRAP_SERVERS || "kafka:19092")
@@ -160,6 +223,116 @@ async function getActiveArgoEtlWorkflow({ requestId } = {}) {
       return null;
     }
     throw error;
+  }
+}
+
+async function startSparkApplication(jobDefinition) {
+  const existingApplications = await k8sCustomObjectsApi.listNamespacedCustomObject({
+    group: sparkApplicationGroup,
+    version: sparkApplicationVersion,
+    namespace: kubernetesNamespace,
+    plural: sparkApplicationPlural,
+    labelSelector: `app=${jobDefinition.jobName}`,
+  });
+
+  const applications = existingApplications.items || existingApplications.body?.items || [];
+
+  const finishedApplications = applications.filter((application) => {
+    const state = application.status?.applicationState?.state;
+    return sparkFinishedStates.includes(state);
+  });
+
+  await Promise.all(
+    finishedApplications.map((application) =>
+      k8sCustomObjectsApi.deleteNamespacedCustomObject({
+        group: sparkApplicationGroup,
+        version: sparkApplicationVersion,
+        namespace: kubernetesNamespace,
+        plural: sparkApplicationPlural,
+        name: application.metadata.name,
+      }),
+    ),
+  );
+
+  const runningApplication = applications.find((application) => {
+    const state = application.status?.applicationState?.state;
+    return !state || sparkActiveStates.includes(state);
+  });
+
+  if (runningApplication) {
+    return {
+      alreadyRunning: true,
+      applicationName: runningApplication.metadata.name,
+      message: `${jobDefinition.displayName} gia' in esecuzione (${runningApplication.metadata.name})`,
+    };
+  }
+
+  const application = await k8sCustomObjectsApi.createNamespacedCustomObject({
+    group: sparkApplicationGroup,
+    version: sparkApplicationVersion,
+    namespace: kubernetesNamespace,
+    plural: sparkApplicationPlural,
+    body: {
+      apiVersion: `${sparkApplicationGroup}/${sparkApplicationVersion}`,
+      kind: "SparkApplication",
+      metadata: {
+        generateName: `${jobDefinition.jobName}-`,
+        labels: {
+          app: jobDefinition.jobName,
+          sparkJob: jobDefinition.key,
+        },
+      },
+      spec: {
+        type: "Python",
+        mode: "cluster",
+        image: sparkJobsImage,
+        imagePullPolicy: "Always",
+        sparkVersion: "3.5.3",
+        mainApplicationFile: jobDefinition.mainApplicationFile,
+        pythonVersion: "3",
+        restartPolicy: { type: "Never" },
+        sparkConf: sparkApplicationConf,
+        driver: sparkDriverSpec,
+        executor: sparkExecutorSpec,
+      },
+    },
+  });
+
+  return {
+    alreadyRunning: false,
+    applicationName: application.metadata?.name || application.body?.metadata?.name,
+    message: `SparkApplication ${jobDefinition.displayName} avviata`,
+  };
+}
+
+async function handleStartSparkJob(req, res, forcedJob) {
+  try {
+    const jobDefinition = getSparkJobDefinition(forcedJob || req.body?.job || req.query?.job);
+
+    if (!jobDefinition) {
+      return res.status(400).json({
+        success: false,
+        error: "Job Spark non valido",
+        allowedJobs: Object.keys(sparkJobDefinitions),
+      });
+    }
+
+    const result = await startSparkApplication(jobDefinition);
+
+    return res.status(200).json({
+      success: true,
+      job: jobDefinition.key,
+      applicationName: result.applicationName,
+      alreadyRunning: result.alreadyRunning,
+      message: result.message,
+    });
+  } catch (error) {
+    const message = getKubernetesErrorMessage(error);
+    console.error("Errore avviando lo Spark job:", message);
+    return res.status(500).json({
+      success: false,
+      error: message,
+    });
   }
 }
 
@@ -376,113 +549,16 @@ app.post("/api/v1/stopELTAfterWindow", async (req, res) => {
   }
 });
 
+app.post("/api/v1/startSparkJob", async (req, res) => {
+  await handleStartSparkJob(req, res);
+});
+
 app.post("/api/v1/startRunningPopulation", async (req, res) => {
-  try {
-    const existingApplications = await k8sCustomObjectsApi.listNamespacedCustomObject({
-      group: sparkApplicationGroup,
-      version: sparkApplicationVersion,
-      namespace: kubernetesNamespace,
-      plural: sparkApplicationPlural,
-      labelSelector: `app=${runningPopulationJobName}`,
-    });
+  await handleStartSparkJob(req, res, "runningPopulation");
+});
 
-    const applications = existingApplications.items || existingApplications.body?.items || [];
-    const finishedStates = ["COMPLETED", "FAILED", "FAILED_SUBMISSION", "SUBMISSION_FAILED", "UNKNOWN"];
-    const activeStates = ["NEW", "SUBMITTED", "RUNNING", "PENDING_RERUN", "RESTARTING", "FAILING"];
-    const finishedApplications = applications.filter((application) => {
-      const state = application.status?.applicationState?.state;
-      return finishedStates.includes(state);
-    });
-    await Promise.all(
-      finishedApplications.map((application) =>
-        k8sCustomObjectsApi.deleteNamespacedCustomObject({
-          group: sparkApplicationGroup,
-          version: sparkApplicationVersion,
-          namespace: kubernetesNamespace,
-          plural: sparkApplicationPlural,
-          name: application.metadata.name,
-        }),
-      ),
-    );
-
-    const runningApplication = applications.find((application) => {
-      const state = application.status?.applicationState?.state;
-      return !state || activeStates.includes(state);
-    });
-    if (runningApplication) {
-      return res.status(200).json({
-        success: true,
-        applicationName: runningApplication.metadata.name,
-        message: `RunningPopulation gia' in esecuzione (${runningApplication.metadata.name})`,
-      });
-    }
-
-    const application = await k8sCustomObjectsApi.createNamespacedCustomObject({
-      group: sparkApplicationGroup,
-      version: sparkApplicationVersion,
-      namespace: kubernetesNamespace,
-      plural: sparkApplicationPlural,
-      body: {
-        apiVersion: `${sparkApplicationGroup}/${sparkApplicationVersion}`,
-        kind: "SparkApplication",
-        metadata: {
-          generateName: `${runningPopulationJobName}-`,
-          labels: {
-            app: runningPopulationJobName,
-          },
-        },
-        spec: {
-          type: "Python",
-          mode: "cluster",
-          image: "davidefast/bigintensive-sparkwithdependencies:latest",
-          imagePullPolicy: "Always",
-          sparkVersion: "3.5.3",
-          mainApplicationFile: "local:///opt/jobs/RunningPopolationAnalysis.py",
-          pythonVersion: "3",
-          restartPolicy: { type: "Never" },
-          sparkConf: {
-            "spark.dynamicAllocation.enabled": "true",
-            "spark.dynamicAllocation.shuffleTracking.enabled": "true",
-            "spark.dynamicAllocation.initialExecutors": "1",
-            "spark.dynamicAllocation.minExecutors": "1",
-            "spark.dynamicAllocation.maxExecutors": "4",
-            "spark.dynamicAllocation.executorIdleTimeout": "60s",
-            "spark.dynamicAllocation.cachedExecutorIdleTimeout": "120s",
-            "spark.executor.cores": "2",
-            "spark.executor.memory": "2g",
-            "spark.sql.shuffle.partitions": "10",
-            "spark.driver.extraClassPath": "/opt/spark/jars/clickhouse-jdbc-0.6.3-all.jar:/opt/spark/jars/postgresql-42.7.2.jar",
-            "spark.executor.extraClassPath": "/opt/spark/jars/clickhouse-jdbc-0.6.3-all.jar:/opt/spark/jars/postgresql-42.7.2.jar",
-          },
-          driver: {
-            cores: 2,
-            coreLimit: "2000m",
-            memory: "2g",
-            serviceAccount: "spark",
-            envFrom: [{ configMapRef: { name: "bigintensive-config" } }, { secretRef: { name: "bigintensive-secrets" } }],
-          },
-          executor: {
-            cores: 2,
-            memory: "2g",
-            envFrom: [{ configMapRef: { name: "bigintensive-config" } }, { secretRef: { name: "bigintensive-secrets" } }],
-          },
-        },
-      },
-    });
-
-    res.status(200).json({
-      success: true,
-      applicationName: application.metadata?.name || application.body?.metadata?.name,
-      message: "SparkApplication RunningPopulation avviata",
-    });
-  } catch (error) {
-    const message = getKubernetesErrorMessage(error);
-    console.error("Errore avviando lo Spark job:", message);
-    res.status(500).json({
-      success: false,
-      error: message,
-    });
-  }
+app.post("/api/v1/startExerciseCorrelation", async (req, res) => {
+  await handleStartSparkJob(req, res, "exerciseCorrelation");
 });
 
 // ============================ START SERVER ===============================
