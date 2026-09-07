@@ -14,6 +14,15 @@ spec:
         app: generate-postgresql-samples
         tier: data
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - davide-master
       restartPolicy: Never
       initContainers:
         - name: wait-for-postgres
