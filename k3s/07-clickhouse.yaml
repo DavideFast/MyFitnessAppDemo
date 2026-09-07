@@ -607,6 +607,7 @@ metadata:
   name: clickhouse-init
   namespace: bigintensive
 spec:
+  ttlSecondsAfterFinished: 600
   template:
     spec:
       serviceAccountName: default

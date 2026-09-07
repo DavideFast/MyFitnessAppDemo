@@ -70,6 +70,13 @@ metadata:
 spec:
   serviceAccountName: elt-argo-runner
   entrypoint: elt-pipeline
+  podGC:
+    strategy: OnPodSuccess
+    deleteDelayDuration: 60s
+  ttlStrategy:
+    secondsAfterSuccess: 1800
+    secondsAfterFailure: 86400
+    secondsAfterCompletion: 86400
   arguments:
     parameters:
       - name: requested-replicas
@@ -449,6 +456,13 @@ spec:
           spec:
             workflowTemplateRef:
               name: elt-pipeline-template
+            podGC:
+              strategy: OnPodSuccess
+              deleteDelayDuration: 60s
+            ttlStrategy:
+              secondsAfterSuccess: 1800
+              secondsAfterFailure: 86400
+              secondsAfterCompletion: 86400
             arguments:
               parameters:
                 - name: requested-replicas
@@ -506,6 +520,13 @@ spec:
   workflowSpec:
     workflowTemplateRef:
       name: elt-pipeline-template
+    podGC:
+      strategy: OnPodSuccess
+      deleteDelayDuration: 60s
+    ttlStrategy:
+      secondsAfterSuccess: 1800
+      secondsAfterFailure: 86400
+      secondsAfterCompletion: 86400
     arguments:
       parameters:
         - name: requested-replicas
