@@ -82,9 +82,6 @@ def main():
             .load()
         )
 
-    df.show(5)
-    df_postgres.show(5)
-
     
     finestra_temporale = Window.partitionBy("athlete_id", "session_id").orderBy("sample_id")
     finestra_temporale_5min = finestra_temporale.rowsBetween(-60, 0)
@@ -92,11 +89,8 @@ def main():
     
 
     df_ordinato = df.orderBy(col("athlete_id"), col("session_id"), col("sample_id"))
-    df_ordinato.show(5)
 
     df_pulito = df_ordinato.dropDuplicates(["athlete_id", "session_id", "sample_id"])
-
-    df_pulito.show(5)
 
     df_pulito_null = df_pulito.filter(
         col("athlete_id").isNotNull()
@@ -108,15 +102,11 @@ def main():
         & col("timestamp").isNotNull()
     )
 
-    df_pulito_null.show(5)
-
 
     df_postgres_aggiornato = df_postgres.withColumn("BMI", col("peso_kg") / (col("altezza_cm") * col("altezza_cm")/10000))
-    df_postgres_aggiornato.show(5)
 
     # join posticipato: solo le colonne antropometriche necessarie, dopo i calcoli pesanti sulle window function
     df_postgres_ridotto = df_postgres_aggiornato.select("athlete_id", "data_rilevazione", "peso_kg", "altezza_cm", "BMI")
-    df_postgres_ridotto.show(5)
     # Calcolo deriva cardiaca puntuale per valore antropometrico
 
     R=6371000  # Raggio della Terra in metri
@@ -218,7 +208,7 @@ def main():
 
     print("Matrice di correlazione:")
     print(matrice_correlazione)
-
+    
     spark.stop()
 
 if __name__ == "__main__":

@@ -74,7 +74,6 @@ def main():
             .load()
         )
 
-    df.show(5)
 
     #################################################################################
     ##                                                                             ##
@@ -84,7 +83,6 @@ def main():
 
     
     df_ordinato = df.filter(col("peso_allenamento").isNotNull())
-    df_ordinato.show(5)
 
     window_spec = Window.partitionBy("athlete_id", "allenamento_id", "nome_esercizio") \
         .orderBy(F.col("peso_allenamento").desc(),F.col("ripetizioni_allenamento").desc())
@@ -94,18 +92,14 @@ def main():
         .filter(col("row_number") == 1) \
         .drop("row_number")
 
-    df_ordinato.show(5)
 
     
     
 
     df_organizzato = df_ordinato.withColumn("massimale_teorico", F.col("peso_allenamento") * (1 + F.col("ripetizioni_allenamento") / 30))
 
-    df_organizzato.show(5)
-
     df_organizzato = df_organizzato.drop("ripetizioni_allenamento","serie_allenamento","recupero_allenamento")
 
-    df_organizzato.show(5)
 
     SOGLIA_COPERTURA = 0.80
     MIN_ATLETI_PER_ESERCIZIO = 30
@@ -137,8 +131,6 @@ def main():
         how="inner",
     )
 
-    df_organizzato.show(5)
-
 
     #################################################################################################################
     ##                                                                                                             ##
@@ -166,7 +158,6 @@ def main():
                                col("b.massimale_teorico"))).alias("varianza_1_mese"))
     
 
-    df_varianze_mobili.show(5)
 
     df_preprocessing = df_varianze_mobili.select(
         "athlete_id",
@@ -184,7 +175,6 @@ def main():
     ).pivot("features_name") \
      .agg(F.first("valore"))
     
-    df_preprocessing.show(5)
 
 
 

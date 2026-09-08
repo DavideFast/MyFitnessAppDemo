@@ -33,3 +33,11 @@ To build the Docker image for the simulator, follow these steps:
 cd MyFitnessAppDemo/services/simulatoreUtenti
 docker build -t simulatore-utenti:latest .
 ```
+
+## Useful Commands
+
+To see the logs of the smartwatch simulator deployment, use the following command:
+
+```bash
+kubectl -n bigintensive logs deploy/smartwatch-simulator -f
+```
