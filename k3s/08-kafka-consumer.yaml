@@ -67,7 +67,7 @@ spec:
         bootstrapServers: kafka:19092
         consumerGroup: rilevatore-immobilita
         topic: heart-rate-events
-        lagThreshold: "1000"
+        lagThreshold: "50"
         activationLagThreshold: "100"
         offsetResetPolicy: latest
 
