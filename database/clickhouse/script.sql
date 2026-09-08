@@ -92,7 +92,7 @@ ARRAY JOIN
         )
     ) AS serie
 
-WHERE r.allenamento_id NOT IN
+WHERE r.allenamento_id GLOBAL NOT IN
 (
     SELECT DISTINCT allenamento_id
     FROM bigintensive.allenamenti
