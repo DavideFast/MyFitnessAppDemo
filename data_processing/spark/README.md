@@ -84,3 +84,11 @@ Note: the production RunningPopulation job is started by the backend via SparkAp
 - PostgreSQL (tabella anthropometric_values)
 
 Connection details are centralized in jobs/config.py via environment variables.
+
+## Useful Commands
+
+To delete all running Spark applications in the bigintensive namespace (useful for cleanup crashed or completed jobs):
+
+```bash
+kubectl -n bigintensive delete sparkapplication --all
+```

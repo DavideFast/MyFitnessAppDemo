@@ -71,7 +71,7 @@ const sparkJobDefinitions = {
     key: "exerciseCorrelation",
     jobName: exerciseCorrelationJobName,
     displayName: "ExerciseCorrelation",
-    mainApplicationFile: process.env.EXERCISE_CORRELATION_MAIN_FILE || "local:///opt/jobs/ExerciseCorrelationAnalysis.py",
+    mainApplicationFile: process.env.EXERCISE_CORRELATION_MAIN_FILE || "local:///opt/jobs/ExerciseCorrelation.py",
   },
 };
 
