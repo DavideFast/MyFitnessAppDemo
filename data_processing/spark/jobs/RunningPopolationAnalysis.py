@@ -42,6 +42,11 @@ def main():
     atleta_min = bounds["min_athlete_id"]
     atleta_max = bounds["max_athlete_id"]
 
+    if atleta_min == 0 and atleta_max == 0:
+        print("Nessun allenamento disponibile per l'analisi.")
+        spark.stop()
+        return
+
     df = (
         spark.read.format("jdbc")
         .option("url", CLICKHOUSE_URL)
@@ -56,18 +61,26 @@ def main():
         .load()
     )
 
-    df_postgres = (
+    postgres_reader = (
         spark.read.format("jdbc")
         .option("url", POSTGRES_URL)
         .option("dbtable", POSTGRES_TABLE)
         .option("user", POSTGRES_PROPS["user"])
         .option("password", POSTGRES_PROPS["password"])
         .option("driver", POSTGRES_PROPS["driver"])
-        .option("lowerBound", atleta_min)
-        .option("upperBound", atleta_max)
-        .option("numPartitions", num_partizioni)
-        .load()
     )
+
+    if atleta_min == atleta_max:
+        df_postgres = postgres_reader.load()
+    else:
+        df_postgres = (
+            postgres_reader
+            .option("partitionColumn", "athlete_id")
+            .option("lowerBound", atleta_min)
+            .option("upperBound", atleta_max)
+            .option("numPartitions", num_partizioni)
+            .load()
+        )
 
     df.show(5)
     df_postgres.show(5)
