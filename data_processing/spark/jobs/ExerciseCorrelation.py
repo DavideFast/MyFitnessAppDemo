@@ -16,7 +16,7 @@ def main():
     #################################################################################
 
     spark = (
-        SparkSession.builder.appName("running-population-analysis")
+        SparkSession.builder.appName("exercise-correlation-analysis")
         .getOrCreate()
     )
 
