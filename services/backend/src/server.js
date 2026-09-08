@@ -41,7 +41,7 @@ const sparkApplicationConf = {
   "spark.dynamicAllocation.executorIdleTimeout": "60s",
   "spark.dynamicAllocation.cachedExecutorIdleTimeout": "120s",
   "spark.executor.cores": "2",
-  "spark.executor.memory": "2g",
+  "spark.executor.memory": "4g",
   "spark.sql.shuffle.partitions": "10",
   "spark.driver.extraClassPath": sparkJdbcExtraClassPath,
   "spark.executor.extraClassPath": sparkJdbcExtraClassPath,
@@ -50,13 +50,13 @@ const sparkPodEnvFrom = [{ configMapRef: { name: "bigintensive-config" } }, { se
 const sparkDriverSpec = {
   cores: 2,
   coreLimit: "2000m",
-  memory: "2g",
+  memory: "4g",
   serviceAccount: "spark",
   envFrom: sparkPodEnvFrom,
 };
 const sparkExecutorSpec = {
   cores: 2,
-  memory: "2g",
+  memory: "4g",
   envFrom: sparkPodEnvFrom,
 };
 
