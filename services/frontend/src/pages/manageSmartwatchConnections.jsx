@@ -98,6 +98,21 @@ export default function ManageSmartwatchConnections() {
       >
         Avvia RunningPopulation
       </button>
+      <button
+        onClick={() =>
+          fetch(`${apiBaseUrl}/api/v1/startExerciseCorrelation`, { method: "POST" })
+            .then((response) => response.json())
+            .then((data) => {
+              if (!data.success) {
+                throw new Error(data.error || "Impossibile avviare ExerciseCorrelation");
+              }
+              alert(`${data.message}: ${data.applicationName || data.jobName || "nome non disponibile"}`);
+            })
+            .catch((err) => alert(`Errore nell'avvio di ExerciseCorrelation: ${err.message}`))
+        }
+      >
+        Avvia ExerciseCorrelation
+      </button>
     </section>
   );
 }
