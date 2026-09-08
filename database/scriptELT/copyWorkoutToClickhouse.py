@@ -73,6 +73,21 @@ CLICKHOUSE_MAX_SPLIT_ATTEMPTS = int(
     os.getenv("CLICKHOUSE_MAX_SPLIT_ATTEMPTS", "8")
 )
 
+# Numero di allenamenti RAW trasformati per finestra durante finalize.
+FINALIZE_BATCH_WORKOUTS = int(
+    os.getenv("FINALIZE_BATCH_WORKOUTS", "20000")
+)
+
+# Finestra minima RAW per split automatico in caso di memory error.
+FINALIZE_MIN_BATCH_WORKOUTS = int(
+    os.getenv("FINALIZE_MIN_BATCH_WORKOUTS", "500")
+)
+
+# Limite di sicurezza per split ricorsivi nella trasformazione finalize.
+FINALIZE_MAX_SPLIT_ATTEMPTS = int(
+    os.getenv("FINALIZE_MAX_SPLIT_ATTEMPTS", "8")
+)
+
 # Modalita' operative:
 # - ingest: solo caricamento PostgreSQL -> RAW (nessuna trasformazione)
 # - finalize: solo consolidamento RAW -> finale
@@ -245,6 +260,26 @@ def get_raw_row_count(ch):
     return int(value)
 
 
+def get_raw_bounds(ch):
+
+    result = ch.query(
+        f"""
+        SELECT
+            count() AS total_rows,
+            min(allenamento_id) AS min_id,
+            max(allenamento_id) AS max_id
+        FROM {CLICKHOUSE_DATABASE}.allenamenti_raw
+        """
+    )
+
+    total_rows, min_id, max_id = result.result_rows[0]
+
+    if not total_rows:
+        return 0, None, None
+
+    return int(total_rows), int(min_id), int(max_id)
+
+
 # ============================================================
 # CONVERSIONE JSONB → STRINGA JSON
 # ============================================================
@@ -370,26 +405,153 @@ def transform_raw_data(ch):
 
     print("Esecuzione trasformazione allenamenti_raw → allenamenti...")
 
-    with open("script.sql", encoding="utf-8") as sql_file:
-        sql = "\n".join(
-            line
-            for line in sql_file
-            if not line.lstrip().startswith("--")
+    total_rows, min_raw_id, max_raw_id = get_raw_bounds(ch)
+
+    if total_rows == 0:
+        print("Nessuna riga RAW da trasformare.")
+        return
+
+    print(
+        f"RAW da trasformare: {total_rows:,} righe "
+        f"(id {min_raw_id:,}..{max_raw_id:,})."
+    )
+
+    transformed_ranges = 0
+
+    def transform_range(start_id, end_id, split_depth=0):
+        nonlocal transformed_ranges
+
+        if end_id < start_id:
+            return
+
+        try:
+            ch.command(
+                f"""
+                INSERT INTO {CLICKHOUSE_DATABASE}.allenamenti
+                (
+                    allenamento_id,
+                    athlete_id,
+                    data_allenamento,
+                    nome_esercizio,
+                    serie_allenamento,
+                    ripetizioni_allenamento,
+                    recupero_allenamento,
+                    peso_allenamento,
+                    created_at
+                )
+                SELECT
+                    r.allenamento_id,
+                    r.athlete_id,
+                    r.data_allenamento,
+                    serie.1 AS nome_esercizio,
+                    serie.2 AS serie_allenamento,
+                    toUInt8(JSONExtractUInt(serie.3, 'ripetizioni')) AS ripetizioni_allenamento,
+                    toUInt8(JSONExtractUInt(serie.3, 'recupero_secondi')) AS recupero_allenamento,
+                    toDecimal32(JSONExtractFloat(serie.3, 'carico_kg'), 2) AS peso_allenamento,
+                    r.created_at
+                FROM {CLICKHOUSE_DATABASE}.allenamenti_raw AS r
+                ARRAY JOIN
+                    arrayFlatten(
+                        arrayMap(
+                            exercise -> arrayMap(
+                                serie_numero ->
+                                (
+                                    JSONExtractString(exercise, 'nome'),
+                                    serie_numero,
+                                    exercise
+                                ),
+                                range(
+                                    1,
+                                    toUInt64(JSONExtractUInt(exercise, 'serie')) + 1
+                                )
+                            ),
+                            JSONExtractArrayRaw(
+                                r.struttura_allenamento,
+                                'esercizi'
+                            )
+                        )
+                    ) AS serie
+                WHERE r.allenamento_id >= {int(start_id)}
+                  AND r.allenamento_id <= {int(end_id)}
+                  AND r.allenamento_id GLOBAL NOT IN
+                  (
+                      SELECT allenamento_id
+                      FROM {CLICKHOUSE_DATABASE}.allenamenti
+                      WHERE allenamento_id >= {int(start_id)}
+                        AND allenamento_id <= {int(end_id)}
+                  )
+                """
+            )
+
+            transformed_ranges += 1
+            print(
+                "Range consolidato: "
+                f"{start_id:,}..{end_id:,} "
+                f"(blocchi completati: {transformed_ranges:,})."
+            )
+        except Exception as exc:
+            error_text = str(exc).upper()
+            is_memory_error = (
+                "MEMORY_LIMIT_EXCEEDED" in error_text or
+                "CODE: 241" in error_text or
+                "MEMORY LIMIT" in error_text
+            )
+
+            range_size = (end_id - start_id) + 1
+            can_split = (
+                range_size > FINALIZE_MIN_BATCH_WORKOUTS and
+                split_depth < FINALIZE_MAX_SPLIT_ATTEMPTS
+            )
+
+            if (not is_memory_error) or (not can_split):
+                raise
+
+            midpoint = start_id + (range_size // 2)
+            left_end = midpoint - 1
+
+            print(
+                "Memoria insufficiente nella trasformazione range "
+                f"{start_id:,}..{end_id:,}; split in "
+                f"{start_id:,}..{left_end:,} e {midpoint:,}..{end_id:,}."
+            )
+
+            transform_range(start_id, left_end, split_depth + 1)
+            transform_range(midpoint, end_id, split_depth + 1)
+
+    current_start = min_raw_id
+
+    while current_start <= max_raw_id:
+        current_end = min(
+            max_raw_id,
+            current_start + FINALIZE_BATCH_WORKOUTS - 1,
         )
 
-    statements = [
-        statement.strip()
-        for statement in sql.split(";")
-        if statement.strip()
-    ]
+        transform_range(current_start, current_end)
+        current_start = current_end + 1
 
-    for statement in statements:
-        if statement.lstrip().upper().startswith("SELECT"):
-            result = ch.query(statement)
-            if result.result_rows:
-                print(f"Risultato controllo ClickHouse: {result.result_rows[0]}")
-        else:
-            ch.command(statement)
+    ch.command(
+        f"TRUNCATE TABLE {CLICKHOUSE_DATABASE}.allenamenti_raw_local ON CLUSTER bigintensive_cluster"
+    )
+
+    final_count = ch.query(
+        f"""
+        SELECT count()
+        FROM {CLICKHOUSE_DATABASE}.allenamenti
+        """
+    )
+
+    raw_remaining = ch.query(
+        f"""
+        SELECT count()
+        FROM {CLICKHOUSE_DATABASE}.allenamenti_raw
+        """
+    )
+
+    print(
+        "Risultato controllo ClickHouse: "
+        f"allenamenti={int(final_count.result_rows[0][0]):,}, "
+        f"raw_rimanenti={int(raw_remaining.result_rows[0][0]):,}"
+    )
 
     print("Trasformazione ClickHouse completata.")
 
