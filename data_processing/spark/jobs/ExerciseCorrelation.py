@@ -169,11 +169,12 @@ def main():
     )
     df_preprocessing = df_preprocessing.withColumn("features_name", F.concat_ws("_", F.col("nome_esercizio"), F.col("periodo")))
 
+    # Raggruppo solo per atleta: la correlazione confronta esercizi nella stessa finestra
+    # temporale, non richiede che siano nella stessa sessione/data.
     df_preprocessing = df_preprocessing.groupBy(
         "athlete_id",
-        "data_allenamento",
     ).pivot("features_name") \
-     .agg(F.first("valore"))
+     .agg(F.avg("valore"))
     
 
 
