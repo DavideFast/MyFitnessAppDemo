@@ -18,7 +18,7 @@ k3s/
 ├── 06-ingress.yaml
 ├── 07-clickhouse.yaml
 ├── 08-kafka-consumer.yaml
-├── 9-smartwatch-simulator.yaml
+├── 09-smartwatch-simulator.yaml
 ├── 10-generate-postgresql-samples.yaml
 ├── 11-argo-elt.yaml
 ├── install-argo-workflows.sh
@@ -53,7 +53,7 @@ k3s/
   - StatefulSet with 2 minimum and 6 maximum replicas, scaled by KEDA from Kafka consumer lag.
   - Service for metrics exposure.
   - Liveness and readiness probes.
-- `9-smartwatch-simulator.yaml`
+- `09-smartwatch-simulator.yaml`
   - Simulated smartwatch data generator.
   - Deployment with configurable number of replicas.
   - Service for internal communication.
@@ -80,7 +80,7 @@ The expected order is fixed and implemented by `deploy-all.sh`:
 9. `06-ingress.yaml`
 10. `07-clickhouse.yaml`
 11. `08-kafka-consumer.yaml` (requires Kafka, PostgreSQL, ClickHouse ready)
-12. `9-smartwatch-simulator.yaml`
+12. `09-smartwatch-simulator.yaml`
 13. `10-generate-postgresql-samples.yaml`
 14. `11-argo-elt.yaml`
 

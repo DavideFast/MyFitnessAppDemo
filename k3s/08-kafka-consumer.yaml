@@ -18,7 +18,7 @@ data:
   MAX_POLL_RECORDS: "500"
 
   # --- Elaborazione ---
-  # Deve combaciare con SAMPLE_INTERVAL del simulatore (9-smartwatch-simulator.yaml)
+  # Deve combaciare con SAMPLE_INTERVAL del simulatore (09-smartwatch-simulator.yaml)
   SAMPLE_INTERVAL: "5.0"
   # Campioni accumulati prima di scrivere il batch su ClickHouse
   MAX_CAMPIONI_BATCH: "2000"
