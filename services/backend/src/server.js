@@ -41,8 +41,11 @@ const sparkApplicationConf = {
   "spark.dynamicAllocation.executorIdleTimeout": "60s",
   "spark.dynamicAllocation.cachedExecutorIdleTimeout": "120s",
   "spark.executor.cores": "2",
-  "spark.executor.memory": "2g",
-  "spark.sql.shuffle.partitions": "10",
+  "spark.executor.memory": "1500m",
+  "spark.executor.memoryOverhead": "512m",
+  "spark.sql.shuffle.partitions": "64",
+  "spark.sql.adaptive.enabled": "true",
+  "spark.sql.adaptive.coalescePartitions.enabled": "true",
   "spark.driver.extraClassPath": sparkJdbcExtraClassPath,
   "spark.executor.extraClassPath": sparkJdbcExtraClassPath,
 };

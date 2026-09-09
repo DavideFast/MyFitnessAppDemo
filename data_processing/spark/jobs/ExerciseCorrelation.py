@@ -171,9 +171,25 @@ def main():
 
     # Raggruppo solo per atleta: la correlazione confronta esercizi nella stessa finestra
     # temporale, non richiede che siano nella stessa sessione/data.
+    periodi = [
+        "varianza_12_mesi",
+        "varianza_6_mesi",
+        "varianza_3_mesi",
+        "varianza_1_mese",
+    ]
+    esercizi = [
+        row["nome_esercizio"]
+        for row in esercizi_ammessi.select("nome_esercizio").distinct().collect()
+    ]
+    pivot_values = [
+        f"{esercizio}_{periodo}"
+        for esercizio in esercizi
+        for periodo in periodi
+    ]
+
     df_preprocessing = df_preprocessing.groupBy(
         "athlete_id",
-    ).pivot("features_name") \
+    ).pivot("features_name", pivot_values) \
      .agg(F.avg("valore"))
     
 
