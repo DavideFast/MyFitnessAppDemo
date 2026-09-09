@@ -64,7 +64,10 @@ spec:
   triggers:
     - type: kafka
       metadata:
-        bootstrapServers: kafka:19092
+        # KEDA runs in the 'keda' namespace, while Kafka is in 'bigintensive'.
+        # The short service name 'kafka' is not resolvable from the keda namespace,
+        # so we must use the fully qualified DNS name of the Kafka service.
+        bootstrapServers: kafka.bigintensive.svc.cluster.local:19092
         consumerGroup: rilevatore-immobilita
         topic: heart-rate-events
         lagThreshold: "50"
