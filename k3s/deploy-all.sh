@@ -113,7 +113,7 @@ $KUBECTL_CMD -n "$NAMESPACE" create configmap clickhouse-schema \
 
 apply_manifest "$SCRIPT_DIR/07-clickhouse.yaml" "ClickHouse & ClickHouse Keeper"
 apply_manifest "$SCRIPT_DIR/08-kafka-consumer.yaml" "Kafka Consumer"
-apply_manifest "$SCRIPT_DIR/9-smartwatch-simulator.yaml" "Smartwatch Simulator"
+apply_manifest "$SCRIPT_DIR/09-smartwatch-simulator.yaml" "Smartwatch Simulator"
 apply_manifest "$SCRIPT_DIR/11-argo-elt.yaml" "Argo ELT Pipeline (manual + 02:00 CronWorkflow)"
 
 echo -e "${GREEN}========================================"
