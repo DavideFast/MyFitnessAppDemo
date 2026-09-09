@@ -55,7 +55,7 @@ CLICKHOUSE_DATABASE = CLICKHOUSE_CONFIG["database"]
 POSTGRES_BATCH_SIZE = 10_000
 
 # Numero di righe inviate per volta a ClickHouse
-CLICKHOUSE_BATCH_SIZE = 50_000
+CLICKHOUSE_BATCH_SIZE = 10_000
 
 # Numero massimo di allenamenti elaborati consecutivamente da ogni pod ELT.
 ELT_CYCLE_WORKOUTS = int(os.getenv("ELT_CYCLE_WORKOUTS", "1000000"))
