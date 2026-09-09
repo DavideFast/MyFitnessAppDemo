@@ -352,7 +352,7 @@ app.use(
 app.use(express.json());
 app.use(createSystemRouter());
 
-// =========================== READ/WRITE DATABASE  ==============================
+// =========================== ROUTE  ==============================
 app.get("/api/v1/readPostgresql", (req, res) => {
   const query = "SELECT * FROM allenamenti WHERE athlete_id = 1 LIMIT 10";
   context.pool.query(query, (err, result) => {
