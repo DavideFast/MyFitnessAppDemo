@@ -33,14 +33,10 @@ const sparkFinishedStates = ["COMPLETED", "FAILED", "FAILED_SUBMISSION", "SUBMIS
 const sparkActiveStates = ["NEW", "SUBMITTED", "RUNNING", "PENDING_RERUN", "RESTARTING", "FAILING"];
 const sparkJdbcExtraClassPath = "/opt/spark/jars/clickhouse-jdbc-0.6.3-all.jar:/opt/spark/jars/postgresql-42.7.2.jar";
 const sparkApplicationConf = {
-  "spark.dynamicAllocation.enabled": "true",
-  "spark.dynamicAllocation.shuffleTracking.enabled": "true",
-  "spark.dynamicAllocation.initialExecutors": "1",
-  "spark.dynamicAllocation.minExecutors": "1",
+  "spark.dynamicAllocation.enabled": "false",
+  "spark.executor.instances": "4",
   "spark.dynamicAllocation.maxExecutors": "4",
-  "spark.dynamicAllocation.executorIdleTimeout": "60s",
-  "spark.dynamicAllocation.cachedExecutorIdleTimeout": "120s",
-  "spark.executor.cores": "2",
+  "spark.executor.cores": "1",
   "spark.executor.memory": "1500m",
   "spark.executor.memoryOverhead": "512m",
   "spark.sql.shuffle.partitions": "64",
@@ -58,8 +54,10 @@ const sparkDriverSpec = {
   envFrom: sparkPodEnvFrom,
 };
 const sparkExecutorSpec = {
-  cores: 2,
-  memory: "2g",
+  cores: 1,
+  coreLimit: "1000m",
+  memory: "1500m",
+  memoryOverhead: "512m",
   envFrom: sparkPodEnvFrom,
 };
 
