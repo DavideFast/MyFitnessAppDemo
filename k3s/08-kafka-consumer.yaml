@@ -42,7 +42,7 @@ data:
   POSTGRES_USER: "postgres"
 
 ---
-# Scale the Kafka Streams consumer group from 2 to 6 pods according to lag.
+# Scale the Kafka Streams consumer group from 1 to 6 pods according to lag.
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -54,7 +54,7 @@ spec:
     kind: StatefulSet
   pollingInterval: 15
   cooldownPeriod: 120
-  minReplicaCount: 2
+  minReplicaCount: 1
   maxReplicaCount: 6
   advanced:
     horizontalPodAutoscalerConfig:
@@ -82,7 +82,7 @@ metadata:
     tier: streaming
 spec:
   serviceName: kafka-consumer-headless
-  replicas: 2
+  replicas: 1
   podManagementPolicy: Parallel
   selector:
     matchLabels:
