@@ -355,7 +355,7 @@ spec:
                   - key: kubernetes.io/hostname
                     operator: In
                     values:
-                      - worker-1
+                      - worker-2
                       - davide-master
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
