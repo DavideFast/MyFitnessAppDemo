@@ -25,7 +25,7 @@ spec:
             - name: ENDPOINT_URL
               value: "http://backend:3001/api/v1/pushToKafka"
             - name: NUM_ATHLETES
-              value: "10000"
+              value: "5000"
             - name: SAMPLE_INTERVAL
               value: "5.0"
             - name: INITIAL_START_WINDOW_MINUTES
